@@ -72,6 +72,11 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
   background:var(--bg); border:1px solid var(--line); }
 .warn { font-size:.82rem; margin:.5rem 0; padding:.4rem .7rem; border-radius:4px;
   background:rgba(194,64,47,.08); border:1px solid var(--up); color:var(--up); }
+.disc { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--accent);
+  border-radius:6px; padding:.6rem 1rem; margin:0 0 1rem; font-size:.85rem; }
+.disc b { color:var(--accent); margin-right:.4rem; }
+.disc .step { margin-right:1.1rem; white-space:nowrap; }
+.disc .hint { color:var(--muted); font-size:.76rem; }
 .status { color:var(--muted); font-size:.85rem; }
 .err { color:var(--up); font-size:.85rem; }
 .note { color:var(--muted); font-size:.72rem; margin-top:1.2rem; }
@@ -92,6 +97,12 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
   <button id="run" onclick="run()">运行预测</button>
   <span class="status" id="status"></span>
 </div>
+<div class="disc"><b>我的纪律</b>
+<span class="step">① 9:45前 决定是否卖 — 依据主力/特大单/板块趋势, 避险避跌</span>
+<span class="step">② 10:00 决策是否买 — 不追高买, 可做T</span>
+<span class="step">③ 14:45前 决定买/卖 — 原则上保持100股过夜</span>
+<div class="hint">配合市况开关: 涨市执行买入端 · 跌市执行卖出端 · 震荡观望 ·
+遇红色背离警示一律回避</div></div>
 <div class="grid" id="grid"></div>
 <p class="note">首次跑某只股票需重构约40天分笔(1~3分钟), 之后有本地缓存(约10秒)。
 实时模式请在交易时段使用; 回测日期需为交易日。资金流为分笔重构口径, 与东财APP绝对值不可直接对照。</p>
