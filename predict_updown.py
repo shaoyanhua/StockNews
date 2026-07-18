@@ -216,6 +216,10 @@ def today_ticks(api, code):
     out.sort(key=lambda t: t["time"])
     return out
 
+def amount_at(ticks, cutoff):
+    """截止cutoff的累计成交额(元)"""
+    return sum(t["price"] * t["vol"] * 100 for t in ticks if t["time"] <= cutoff)
+
 def flow_at(ticks, cutoff):
     """截止cutoff的 (特大单净, 主力净, 最后价) 单位亿"""
     sup = lg = 0.0
@@ -238,7 +242,9 @@ def flow_at(ticks, cutoff):
 
 # ───────────────────────── 逻辑回归(纯python) ─────────────────────────
 
-def logistic_fit(X, y, iters=800, lr=0.3, l2=0.01):
+def logistic_fit(X, y, iters=800, lr=0.3, l2=0.01, nonneg=True):
+    """nonneg=True: 系数投影到>=0 (板块/资金流/自身与涨跌的关系原理上非负,
+    防止共线性把资金流系数翻负学出"流出看多"的病态权重)"""
     n, m = len(X), len(X[0])
     mean = [sum(r[j] for r in X) / n for j in range(m)]
     std = [max(1e-9, math.sqrt(sum((r[j] - mean[j]) ** 2 for r in X) / n)) for j in range(m)]
@@ -255,6 +261,8 @@ def logistic_fit(X, y, iters=800, lr=0.3, l2=0.01):
             gb += e
         for j in range(m):
             w[j] -= lr * (gw[j] / n + l2 * w[j])
+            if nonneg and w[j] < 0:
+                w[j] = 0.0
         b -= lr * gb / n
     return {"w": w, "b": b, "mean": mean, "std": std}
 
@@ -305,31 +313,22 @@ def softmax_prob(model, x):
     tot = sum(ex)
     return [e / tot for e in ex]
 
-def ridge_fit(X, y, l2=0.5):
-    """岭回归(标准化特征, 高斯消元解正规方程) -> 预测连续涨跌幅"""
+def ridge_fit(X, y, l2=0.5, nonneg=True, iters=2000, lr=0.1):
+    """岭回归(投影梯度, nonneg=True时系数>=0) -> 预测连续涨跌幅"""
     n, m = len(X), len(X[0])
     mean = [sum(r[j] for r in X) / n for j in range(m)]
     std = [max(1e-9, math.sqrt(sum((r[j] - mean[j]) ** 2 for r in X) / n)) for j in range(m)]
     Z = [[(r[j] - mean[j]) / std[j] for j in range(m)] for r in X]
     my = sum(y) / n
     yc = [v - my for v in y]
-    # A = Z'Z + l2*I, b = Z'y
-    A = [[sum(Z[i][a] * Z[i][b] for i in range(n)) + (l2 if a == b else 0)
-          for b in range(m)] for a in range(m)]
-    bv = [sum(Z[i][a] * yc[i] for i in range(n)) for a in range(m)]
-    # 高斯消元
-    for col in range(m):
-        piv = max(range(col, m), key=lambda r: abs(A[r][col]))
-        A[col], A[piv] = A[piv], A[col]
-        bv[col], bv[piv] = bv[piv], bv[col]
-        for r in range(col + 1, m):
-            f = A[r][col] / A[col][col]
-            for c in range(col, m):
-                A[r][c] -= f * A[col][c]
-            bv[r] -= f * bv[col]
     w = [0.0] * m
-    for r in range(m - 1, -1, -1):
-        w[r] = (bv[r] - sum(A[r][c] * w[c] for c in range(r + 1, m))) / A[r][r]
+    for _ in range(iters):
+        resid = [sum(w[j] * Z[i][j] for j in range(m)) - yc[i] for i in range(n)]
+        for j in range(m):
+            g = sum(resid[i] * Z[i][j] for i in range(n)) / n + l2 * w[j] / n
+            w[j] -= lr * g
+            if nonneg and w[j] < 0:
+                w[j] = 0.0
     pred = [sum(w[j] * Z[i][j] for j in range(m)) + my for i in range(n)]
     ss_res = sum((p - yv) ** 2 for p, yv in zip(pred, y))
     ss_tot = sum((yv - my) ** 2 for yv in y) or 1e-9
@@ -536,13 +535,17 @@ def run_prediction(code, date=None, cutoff="10:30", train=40, thr=None,
     train_ms = sorted(r[2] for r in rows)
     k10 = max(1, len(train_ms) // 10)
     p10, p90 = train_ms[k10 - 1], train_ms[-k10]
+    amt = amount_at(ticks, cutoff)
+    strength = m_c * 1e8 / amt * 100 if amt else 0  # 主力净流入占成交额%
     warning = None
-    if m_c <= p10 and self_c > -1.5:
-        warning = (f"主力流出{m_c:+.1f}亿已达训练窗最差10%分位({p10:+.1f}亿)但价格未大跌 "
-                   "— 典型出货形态, 上方概率可能失真, 建议回避")
-    elif m_c >= p90 and self_c < 1.5:
-        warning = (f"主力流入{m_c:+.1f}亿已达训练窗最强10%分位({p90:+.1f}亿)但价格滞涨 "
-                   "— 买不动形态, 上方概率可能失真, 谨慎追买")
+    if (m_c <= p10 or strength <= -8) and self_c > -1.5:
+        warning = (f"主力流出{m_c:+.1f}亿(占成交额{strength:+.0f}%, 训练窗最差10%分位"
+                   f"{p10:+.1f}亿)但价格未大跌 — 典型出货形态, "
+                   "上方概率可能失真, 建议回避")
+    elif (m_c >= p90 or strength >= 8) and self_c < 1.5:
+        warning = (f"主力流入{m_c:+.1f}亿(占成交额{strength:+.0f}%, 训练窗最强10%分位"
+                   f"{p90:+.1f}亿)但价格滞涨 — 买不动形态, "
+                   "上方概率可能失真, 谨慎追买")
     if warning and advice.startswith("买"):
         advice = "观望(资金背离警示)"
 
