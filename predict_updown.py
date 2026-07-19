@@ -368,7 +368,7 @@ def pearson(xs, ys):
 
 # ───────────────────────── 主流程 ─────────────────────────
 
-def run_prediction(code, date=None, cutoff="10:30", train=40, thr=None,
+def run_prediction(code, date=None, cutoff="10:30", train=60, thr=None,
                    progress=lambda msg: None):
     """完整预测流程, 返回结构化dict(供CLI与网页共用). 失败抛ValueError."""
     progress(f"[1/5] 拉取 {code} 日K与行业归属...")
@@ -585,7 +585,7 @@ def main():
     ap.add_argument("code", help="6位股票代码, 如 688256")
     ap.add_argument("--date", help="回看某交易日 YYYY-MM-DD (缺省=今天实时)")
     ap.add_argument("--cutoff", default="10:30", help="观察时点 HH:MM, 默认10:30")
-    ap.add_argument("--train", type=int, default=40, help="训练窗口天数, 默认40")
+    ap.add_argument("--train", type=int, default=60, help="训练窗口天数, 默认60")
     ap.add_argument("--thr", type=float, default=None,
                     help="显著涨跌阈值%%, 缺省=训练窗日均|涨跌|中位数的一半")
     args = ap.parse_args()
