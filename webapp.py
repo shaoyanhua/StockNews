@@ -203,6 +203,29 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
 .status { color:var(--muted); font-size:.85rem; }
 .err { color:var(--up); font-size:.85rem; }
 .note { color:var(--muted); font-size:.72rem; margin-top:1.2rem; }
+.respanel { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+  padding:1rem; margin:0 0 1.4rem; }
+.reshead { display:flex; align-items:baseline; gap:.7rem; flex-wrap:wrap; margin:0 0 .6rem; }
+.resscore { font-size:1.6rem; font-weight:700; font-variant-numeric:tabular-nums; }
+.resband { font-size:.9rem; padding:.2rem .7rem; border-radius:4px; color:#fff; }
+.rb-strong { background:var(--up); } .rb-mid { background:#B8860B; }
+.rb-mix { background:var(--flat); } .rb-weak { background:var(--dn); }
+.condlist { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr));
+  gap:.35rem; margin:0 0 .8rem; }
+.cond { display:flex; justify-content:space-between; gap:.5rem; font-size:.78rem;
+  padding:.3rem .6rem; border-radius:4px; background:var(--bg); border:1px solid var(--line); }
+.cond .pts { font-variant-numeric:tabular-nums; font-weight:600; }
+.residx { font-size:.78rem; color:var(--muted); margin:0 0 .8rem; }
+.resgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:.6rem; }
+.resmini { background:var(--bg); border:1px solid var(--line); border-radius:6px;
+  padding:.5rem .7rem; font-size:.78rem; }
+.resmini h3 { margin:0 0 .3rem; font-size:.86rem; display:flex;
+  justify-content:space-between; align-items:center; }
+.resmini .b { display:inline-block; padding:.05rem .5rem; border-radius:3px; color:#fff;
+  font-size:.7rem; font-weight:600; }
+.resmini .row { display:flex; justify-content:space-between; color:var(--muted);
+  font-variant-numeric:tabular-nums; margin-top:.15rem; }
+.resmini .flag { font-size:.7rem; margin-top:.3rem; color:var(--muted); }
 </style></head><body>
 <h1>涨跌预测台 · 六股</h1>
 <p class="sub">特征: 主力净流入 / 特大单净流入 / 板块涨跌 / 自身涨跌 ·
@@ -218,6 +241,7 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
   <label>股票</label>
   <select id="code">__STOCK_OPTS__<option value="ALL">全部六只</option></select>
   <button id="run" onclick="run()">运行预测</button>
+  <button id="runRes" onclick="runResonance()">共振预测</button>
   <span class="status" id="status"></span>
 </div>
 <div class="disc"><b>我的纪律</b>
@@ -227,6 +251,7 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
 <div class="hint">配合市况开关: 涨市执行买入端 · 跌市执行卖出端 · 震荡观望 ·
 遇红色背离警示一律回避</div></div>
 <div class="grid" id="grid"></div>
+<div id="resPanel"></div>
 <p class="note">首次跑某只股票需重构约40天分笔(1~3分钟), 之后有本地缓存(约10秒)。
 实时模式请在交易时段使用; 回测日期需为交易日。资金流为分笔重构口径, 与东财APP绝对值不可直接对照。</p>
 <script>
@@ -298,7 +323,7 @@ async function fetchOne(code) {
 async function run() {
   const sel = $('code').value;
   const codes = sel === 'ALL' ? __ALL_CODES__ : [sel];
-  $('run').disabled = true; $('grid').innerHTML = '';
+  $('run').disabled = true; $('runRes').disabled = true; $('grid').innerHTML = '';
   for (const c of codes) {
     $('status').textContent = `${c} 计算中(首次1~3分钟)...`;
     try {
@@ -310,7 +335,76 @@ async function run() {
     }
   }
   $('status').textContent = '完成';
-  $('run').disabled = false;
+  $('run').disabled = false; $('runRes').disabled = false;
+}
+
+function resStyle(score) {
+  if (score >= 8) return ['rb-strong', '强共振'];
+  if (score >= 5) return ['rb-mid', '偏强'];
+  if (score >= 2) return ['rb-mix', '信号冲突'];
+  return ['rb-weak', '预测失效'];
+}
+function condRow(c) {
+  const icon = c.met ? (c.pts > 0 ? '✓' : '⚠') : '·';
+  const vc = c.met ? (c.pts > 0 ? 'pos' : 'neg') : '';
+  return `<div class="cond"><span>${icon} ${c.name}</span>`+
+    `<span class="pts ${vc}">${c.pts > 0 ? '+' : ''}${c.pts}</span></div>`;
+}
+function resMini(s, e) {
+  const badgeCls = s.advice.startsWith('买') ? 'b-buy' :
+                   (s.advice.startsWith('卖') ? 'b-sell' : 'b-hold');
+  const f = s.features, p = s.probs3;
+  const vwapFlag = e.vwap_above === true ? '✓站上均价线' :
+                   (e.vwap_above === false ? '✗跌破均价线' : '均价线数据缺');
+  const gapFlag = e.gap_up ? (e.below_open ? ' · 高开已回落' : ' · 高开维持') :
+                  (e.gap_up === false ? ' · 低开' : '');
+  return `<div class="resmini">
+    <h3>${s.name}<span class="b ${badgeCls}">${s.advice}</span></h3>
+    <div class="row"><span>${e.branch}</span><span>${s.code}</span></div>
+    <div class="row"><span>买${pct(p.buy)}/望${pct(p.hold)}/卖${pct(p.sell)}</span></div>
+    <div class="row"><span>板块<b class="${cls(f.board)}">${sgn(f.board,'%')}</b></span>
+      <span>主力<b class="${cls(f.main)}">${sgn(f.main,'亿')}</b></span></div>
+    <div class="flag">${vwapFlag}${gapFlag}</div>
+  </div>`;
+}
+function resonanceCard(d) {
+  const [bandCls, bandLabel] = resStyle(d.score);
+  const condHtml = d.conds.map(condRow).join('');
+  const idxHtml = Object.entries(d.indices || {}).map(([k, v]) =>
+    `${k} ${sgn(v, '%')}`).join(' · ') || '指数数据不可用(不计入大盘一项评分)';
+  const miniHtml = d.stocks.map((s, i) => resMini(s, d.extras[i])).join('');
+  return `<div class="respanel">
+    <div class="reshead">
+      <span class="resscore">${d.score}</span>
+      <span class="resband ${bandCls}">${bandLabel}</span>
+      <span class="status">${d.date} · ${d.cutoff}时点</span>
+    </div>
+    <div class="condlist">${condHtml}</div>
+    <div class="residx">大盘参考: ${idxHtml}</div>
+    <div class="resgrid">${miniHtml}</div>
+  </div>`;
+}
+async function runResonance() {
+  const mode = $('mode').value;
+  const params = new URLSearchParams();
+  if (mode === 'backtest') {
+    params.set('cutoff', $('cutoff').value);
+    params.set('date', $('date').value);
+  }
+  const q = '/api/resonance' + (params.toString() ? '?' + params.toString() : '');
+  $('run').disabled = true; $('runRes').disabled = true;
+  $('status').textContent = '共振预测计算中(需拉4只股票, 首次1~3分钟)...';
+  $('resPanel').innerHTML = '';
+  try {
+    const resp = await fetch(q);
+    const d = await resp.json();
+    if (d.error) throw new Error(d.error);
+    $('resPanel').innerHTML = resonanceCard(d);
+  } catch (e) {
+    $('resPanel').innerHTML = `<div class="respanel"><div class="err">${e.message}</div></div>`;
+  }
+  $('status').textContent = '完成';
+  $('run').disabled = false; $('runRes').disabled = false;
 }
 </script></body></html>"""
 
@@ -339,11 +433,10 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/":
             self._send(PAGE, "text/html; charset=utf-8")
             return
-        if u.path != "/api/predict":
+        if u.path not in ("/api/predict", "/api/resonance"):
             self._send('{"error":"not found"}', status=404)
             return
         q = parse_qs(u.query)
-        code = (q.get("code") or [""])[0]
         date = (q.get("date") or [None])[0] or None
         cutoff = (q.get("cutoff") or [None])[0]
         if not cutoff:
@@ -353,6 +446,28 @@ class Handler(BaseHTTPRequestHandler):
                 from datetime import datetime
                 now = datetime.now().strftime("%H:%M")
                 cutoff = min(now, "15:00")
+        if u.path == "/api/resonance":
+            reskey = (date, cutoff)
+            if date and reskey in _rescache:
+                self._send(json.dumps(_rescache[reskey], ensure_ascii=False))
+                return
+            try:
+                with _lock:
+                    if date and reskey in _rescache:
+                        result = _rescache[reskey]
+                    else:
+                        result = resonance_run(date, cutoff)
+                        if date:
+                            _rescache[reskey] = result
+                self._send(json.dumps(result, ensure_ascii=False))
+            except ValueError as e:
+                self._send(json.dumps({"error": str(e)}, ensure_ascii=False))
+            except Exception as e:
+                traceback.print_exc()
+                self._send(json.dumps({"error": f"内部错误: {type(e).__name__}: {e}"},
+                                      ensure_ascii=False))
+            return
+        code = (q.get("code") or [""])[0]
         if not (code.isdigit() and len(code) == 6):
             self._send(json.dumps({"error": "无效代码"}, ensure_ascii=False))
             return
