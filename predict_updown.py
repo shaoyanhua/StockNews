@@ -34,7 +34,9 @@ except ImportError:
     sys.exit("需要 pytdx: pip install pytdx")
 
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-TDX_SERVERS = [("119.97.185.59", 7709), ("124.70.133.119", 7709),
+TDX_SERVERS = [("115.238.56.198", 7709), ("115.238.90.165", 7709),
+               ("180.153.18.170", 7709), ("60.191.117.167", 7709),
+               ("119.97.185.59", 7709), ("124.70.133.119", 7709),
                ("116.205.183.150", 7709), ("123.60.73.44", 7709),
                ("116.205.163.254", 7709), ("121.36.225.169", 7709)]
 CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_predict")
@@ -202,8 +204,7 @@ def day_ticks(api, code, date_int):
             w.writerow([t["time"], t["price"], t["vol"], t["buyorsell"]])
     return out
 
-def today_ticks(api, code):
-    """今日实时分笔(不缓存)"""
+def _today_ticks_from(api, code):
     out, start = [], 0
     while True:
         chunk = api.get_transaction_data(tdx_market(code), code, start, 2000)
@@ -215,6 +216,26 @@ def today_ticks(api, code):
         start += len(chunk)
     out.sort(key=lambda t: t["time"])
     return out
+
+def today_ticks(api, code):
+    """今日实时分笔(不缓存); 部分服务器不推当日分笔, 取不到时自动换备用服务器"""
+    out = _today_ticks_from(api, code)
+    if out:
+        return out
+    for ip, port in TDX_SERVERS:
+        try:
+            with socket.create_connection((ip, port), timeout=2):
+                pass
+            alt = TdxHq_API()
+            if not alt.connect(ip, port):
+                continue
+            out = _today_ticks_from(alt, code)
+            alt.disconnect()
+            if out:
+                return out
+        except Exception:
+            continue
+    return []
 
 def amount_at(ticks, cutoff):
     """截止cutoff的累计成交额(元)"""
@@ -478,8 +499,14 @@ def run_prediction(code, date=None, cutoff="10:30", train=60, thr=None,
         bps = [rq[p]["pct"] for p in proxies if p in rq]
     api.disconnect()
     s_c, m_c, px = flow_at(ticks, cutoff)
-    if not (ticks and pc and pc_raw and px and bps):
-        raise ValueError("目标日数据不足(非交易日/未开盘?)")
+    if not ticks:
+        raise ValueError("未取到当日分笔(非交易日/未开盘/通达信服务器无实时数据?)")
+    if not (pc and pc_raw):
+        raise ValueError("昨收价获取失败(腾讯行情异常?)")
+    if not px:
+        raise ValueError(f"截止{cutoff}无成交(未开盘?)")
+    if not bps:
+        raise ValueError("板块代理股行情获取失败")
     self_c = (px / pc_raw - 1) * 100
     board_c = sum(bps) / len(bps)
 

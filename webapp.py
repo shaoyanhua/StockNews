@@ -15,16 +15,139 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-from predict_updown import run_prediction
+from predict_updown import (run_prediction, day_ticks, today_ticks, amount_at,
+                            tdx_connect, tencent_kline, tencent_realtime, S, UA)
 
 PORT = 8688
 STOCKS = [("300308", "中际旭创"), ("002384", "东山精密"), ("688256", "寒武纪"),
           ("600183", "生益科技"), ("002463", "沪电股份"), ("603986", "兆易创新")]
 CUTOFFS = ["09:30", "09:35", "09:40", "09:45", "09:50", "09:55",
            "10:00", "10:30", "11:30", "13:30", "14:00", "14:30"]
+# 共振四票: 代码, 名称, 产业分支
+RES_STOCKS = [("300308", "中际旭创", "光模块/通信设备"),
+              ("002463", "沪电股份", "PCB/元器件"),
+              ("002384", "东山精密", "PCB/元器件"),
+              ("688256", "寒武纪", "半导体")]
 
 _lock = threading.Lock()          # 串行执行预测, 避免并发打爆数据源
 _cache = {}                        # (code,date,cutoff) -> result, 仅缓存回测
+_rescache = {}                     # (date,cutoff) -> 共振结果, 仅缓存回测
+
+
+def _index_pcts(date):
+    """上证指数/科创50 涨跌幅 (回测=当日收盘, 实时=当前)"""
+    out = {}
+    try:
+        if date:
+            for sym, nm in (("sh000001", "上证指数"), ("sh000688", "科创50")):
+                u = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+                     f"?param={sym},day,,,120,")
+                d = S.get(u, headers={"User-Agent": UA}, timeout=15).json()["data"][sym]
+                bars = d.get("day") or d.get("qfqday")
+                closes = {b[0]: float(b[2]) for b in bars}
+                ds = sorted(closes)
+                if date in closes and ds.index(date) > 0:
+                    prev = closes[ds[ds.index(date) - 1]]
+                    out[nm] = round((closes[date] / prev - 1) * 100, 2)
+        else:
+            r = S.get("https://qt.gtimg.cn/q=sh000001,sh000688",
+                      headers={"User-Agent": UA}, timeout=10)
+            for line in r.content.decode("gbk", "ignore").split(";"):
+                if '"' not in line:
+                    continue
+                v = line.split('"')[1].split("~")
+                if len(v) > 32:
+                    nm = "上证指数" if "000001" in line.split("=")[0] else "科创50"
+                    out[nm] = float(v[32] or 0)
+    except Exception:
+        pass
+    return out
+
+
+def resonance_run(date, cutoff):
+    """四票共振: 逐只run_prediction + 盘口扩展信息 + 共振评分"""
+    api = tdx_connect()
+    stocks, extras = [], []
+    try:
+        for code, name, branch in RES_STOCKS:
+            r = run_prediction(code, date, cutoff)
+            if date:
+                ticks = day_ticks(api, code, int(date.replace("-", "")))
+                kr = tencent_kline(code, n=90, fq="")
+                ds = [d for d, _ in kr]
+                kc = dict(kr)
+                i = ds.index(date)
+                prev_close, prev_date = kc[ds[i - 1]], ds[i - 1]
+            else:
+                ticks = today_ticks(api, code)
+                q = tencent_realtime([code])[code]
+                prev_close = q["last_close"]
+                kr = tencent_kline(code, n=10, fq="")
+                ds = [d for d, _ in kr]
+                from datetime import datetime as _dt
+                today = _dt.now().strftime("%Y-%m-%d")
+                prev_date = ds[-2] if ds and ds[-1] == today else ds[-1]
+            upto = [t for t in ticks if t["time"] <= cutoff]
+            vol = sum(t["vol"] for t in upto)
+            vwap = (sum(t["price"] * t["vol"] for t in upto) / vol) if vol else None
+            open_p = upto[0]["price"] if upto else None
+            px = upto[-1]["price"] if upto else None
+            amt = sum(t["price"] * t["vol"] * 100 for t in upto)
+            try:
+                pticks = day_ticks(api, code, int(prev_date.replace("-", "")))
+                amt_prev = amount_at(pticks, cutoff)
+            except Exception:
+                amt_prev = None
+            extras.append({
+                "code": code, "name": name, "branch": branch,
+                "vwap_above": (px >= vwap) if (px and vwap) else None,
+                "gap_up": (open_p > prev_close) if (open_p and prev_close) else None,
+                "below_open": (px < open_p) if (px and open_p) else None,
+                "vwap": round(vwap, 2) if vwap else None, "px": px,
+                "amt": amt, "amt_prev": amt_prev})
+            stocks.append(r)
+    finally:
+        api.disconnect()
+    idx = _index_pcts(date)
+
+    conds = []
+    def add(name, pts, met):
+        conds.append({"name": name, "pts": pts, "met": bool(met)})
+    add("四只预测全部上涨", 2, all(s["prob_up"] >= 0.5 for s in stocks))
+    branches = {}
+    for s, e in zip(stocks, extras):
+        branches.setdefault(e["branch"], []).append(s["features"]["board"])
+    add("三个产业分支板块全部上涨", 2,
+        len(branches) >= 3 and all(sum(v) / len(v) > 0 for v in branches.values()))
+    add("至少三只站上分时均价线", 2,
+        sum(1 for e in extras if e["vwap_above"]) >= 3)
+    add("至少三只主力净流入", 2,
+        sum(1 for s in stocks if s["features"]["main"] > 0) >= 3)
+    board_avg = sum(s["features"]["board"] for s in stocks) / len(stocks)
+    amt_ok = [e for e in extras if e["amt_prev"]]
+    heavier = (sum(e["amt"] for e in amt_ok) >=
+               1.1 * sum(e["amt_prev"] for e in amt_ok)) if amt_ok else False
+    add("AI硬件板块放量上涨(较昨日同时段+10%)", 2, board_avg > 0 and heavier)
+    add("大盘/科创50无明显下跌(>-0.5%)", 1,
+        bool(idx) and all(v > -0.5 for v in idx.values()))
+    add("四只集体高开回落", -3,
+        all(e["gap_up"] for e in extras) and all(e["below_open"] for e in extras))
+    add("两只以上跌破分时均价线", -3,
+        sum(1 for e in extras if e["vwap_above"] is False) >= 2)
+    add("板块上涨但资金合计流出", -2,
+        board_avg > 0 and sum(s["features"]["main"] for s in stocks) < 0)
+    score = sum(c["pts"] for c in conds if c["met"])
+    if score >= 8:
+        band = "强共振 — 可顺势操作, 但不追直线拉升"
+    elif score >= 5:
+        band = "偏强 — 小仓位或等回踩"
+    elif score >= 2:
+        band = "信号冲突 — 以观望、做T为主"
+    else:
+        band = "预测失效 — 不执行买入"
+    return {"score": score, "band": band, "conds": conds, "indices": idx,
+            "stocks": stocks, "extras": extras,
+            "date": stocks[0]["date"], "cutoff": cutoff}
 
 PAGE = """<!DOCTYPE html>
 <html lang="zh"><head>

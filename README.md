@@ -29,7 +29,7 @@
 https://claude.ai/code/artifact/c1d6aeb9-ae69-422c-9edf-0be1fe562126
 https://claude.ai/code/artifact/20d1d0d0-e625-472b-b06d-a7ec334ccbb4?via=auto_preview
 
-
+python h:\Project\StockNews\webapp.py
 
 ## 3. 注意事项：
 - **API Key:**利用.env存储API KEY
