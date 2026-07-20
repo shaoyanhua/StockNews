@@ -78,7 +78,7 @@ def tencent_kline(code, n=90, fq="qfq"):
     return [(b[0], float(b[2])) for b in bars]
 
 def tencent_realtime(codes):
-    """实时: {code: {name, price, last_close, pct, amount_wan}}"""
+    """实时Level-1行情；五档盘口为腾讯公开快照，可能有秒级延迟。"""
     import time as _time
     out = {}
     for i in range(0, len(codes), 50):
@@ -100,9 +100,25 @@ def tencent_realtime(codes):
             v = line.split('"')[1].split("~")
             if len(v) < 40:
                 continue
-            out[key[2:]] = {"name": v[1], "price": float(v[3] or 0),
-                            "last_close": float(v[4] or 0), "pct": float(v[32] or 0),
-                            "amount_wan": float(v[37] or 0)}
+            def num(i):
+                try:
+                    return float(v[i] or 0)
+                except (ValueError, IndexError):
+                    return 0.0
+
+            bids = [{"price": num(9 + i * 2), "volume": num(10 + i * 2)}
+                    for i in range(5)]
+            asks = [{"price": num(19 + i * 2), "volume": num(20 + i * 2)}
+                    for i in range(5)]
+            bid_vol, ask_vol = sum(x["volume"] for x in bids), sum(x["volume"] for x in asks)
+            depth_imbalance = ((bid_vol - ask_vol) / (bid_vol + ask_vol) * 100
+                               if bid_vol + ask_vol else None)
+            out[key[2:]] = {
+                "name": v[1], "price": num(3), "last_close": num(4), "open": num(5),
+                "pct": num(32), "high": num(33), "low": num(34),
+                "amount_wan": num(37), "turnover": num(38),
+                "bids": bids, "asks": asks, "depth_imbalance": depth_imbalance,
+            }
     return out
 
 def tencent_kline_vol(code, n=90):
