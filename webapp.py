@@ -13,11 +13,13 @@ import json
 import os
 import threading
 import traceback
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from predict_updown import (run_prediction, day_ticks, today_ticks, amount_at,
-                            tdx_connect, tencent_kline, tencent_realtime, S, UA)
+                            tdx_connect, tencent_kline, tencent_realtime, S, UA,
+                            RemoteDataError)
 from continuation_analysis import continuation_run
 
 PORT = int(os.environ.get("STOCKNEWS_PORT", "8688"))
@@ -376,10 +378,36 @@ async function fetchOne(code) {
   let q = `/api/predict?code=${code}`;
   if (mode === 'backtest') q += `&cutoff=${$('cutoff').value}&date=${$('date').value}`;
   // 实时模式不传cutoff, 服务端自动取当前时刻
-  const resp = await fetch(q);
-  const d = await resp.json();
-  if (d.error) throw new Error(d.error);
-  return d;
+  return apiJson(q);
+}
+
+async function apiJson(url, timeoutMs=240000, retry=true) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, {signal: controller.signal});
+    const raw = await resp.text();
+    let data;
+    try { data = JSON.parse(raw); }
+    catch (_) { throw new Error(`预测服务返回了无效数据（HTTP ${resp.status}）`); }
+    if (!resp.ok || data.error) throw new Error(data.error || `预测服务错误（HTTP ${resp.status}）`);
+    return data;
+  } catch (e) {
+    if (e.name === 'AbortError')
+      throw new Error('远端行情响应超时，请稍后重试；本次预测已取消');
+    if (e instanceof TypeError) {
+      // 本机连接偶发重置时先确认服务健康，再重试原请求一次。
+      if (retry) {
+        await new Promise(resolve => setTimeout(resolve, 800));
+        try {
+          const health = await fetch('/api/health', {cache: 'no-store'});
+          if (health.ok) return apiJson(url, timeoutMs, false);
+        } catch (_) { /* 下面给出明确的服务状态提示 */ }
+      }
+      throw new Error('预测服务连接已中断；请运行 start_webapp.ps1，并查看 webapp.current.stderr.log');
+    }
+    throw e;
+  } finally { clearTimeout(timer); }
 }
 async function run() {
   const sel = $('code').value;
@@ -458,9 +486,7 @@ async function runResonance() {
   $('status').textContent = '共振预测计算中(需拉4只股票, 首次1~3分钟)...';
   $('resPanel').innerHTML = '';
   try {
-    const resp = await fetch(q);
-    const d = await resp.json();
-    if (d.error) throw new Error(d.error);
+    const d = await apiJson(q);
     $('resPanel').innerHTML = resonanceCard(d);
   } catch (e) {
     $('resPanel').innerHTML = `<div class="respanel"><div class="err">${e.message}</div></div>`;
@@ -543,10 +569,7 @@ async function fetchContinuation(code) {
   if ($('mode').value === 'backtest') {
     params.set('date', $('date').value); params.set('cutoff', $('cutoff').value);
   }
-  const resp = await fetch('/api/continuation?' + params.toString());
-  const d = await resp.json();
-  if (d.error) throw new Error(d.error);
-  return d;
+  return apiJson('/api/continuation?' + params.toString());
 }
 async function runContinuation() {
   const selected = $('code').value;
@@ -560,9 +583,7 @@ async function runContinuation() {
       params.set('date', $('date').value); params.set('cutoff', $('cutoff').value);
     }
     try {
-      const resp = await fetch('/api/continuation_group?' + params.toString());
-      const group = await resp.json();
-      if (group.error) throw new Error(group.error);
+      const group = await apiJson('/api/continuation_group?' + params.toString());
       const st = $('contPanel').querySelector('.conttitle .status');
       if (st) st.textContent = `四股共振 ${group.resonance_score}分 · ${group.resonance_band}`;
       for (const d of group.items)
@@ -607,10 +628,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            # 浏览器关闭/刷新页面不应影响服务进程。
+            pass
+
+    def _send_error(self, exc):
+        if isinstance(exc, RemoteDataError):
+            message, status = f"远端行情暂不可用：{exc}", 502
+        else:
+            message, status = f"内部错误: {type(exc).__name__}: {exc}", 500
+        self._send(json.dumps({"error": message}, ensure_ascii=False), status=status)
 
     def do_GET(self):
         u = urlparse(self.path)
+        if u.path == "/api/health":
+            self._send(json.dumps({
+                "ok": True, "pid": os.getpid(),
+                "time": datetime.now().isoformat(timespec="seconds")
+            }, ensure_ascii=False))
+            return
         if u.path == "/":
             self._send(PAGE, "text/html; charset=utf-8")
             return
@@ -625,9 +663,13 @@ class Handler(BaseHTTPRequestHandler):
             if date:
                 cutoff = "10:30"
             else:  # 实时: 用当前时刻(收盘后按15:00算), 训练窗同口径
-                from datetime import datetime
                 now = datetime.now().strftime("%H:%M")
-                cutoff = min(now, "15:00")
+                if "11:30" < now < "13:00":
+                    cutoff = "11:30"       # 午休期间使用上午收盘快照
+                elif now > "15:00":
+                    cutoff = "15:00"       # 收盘后使用全天快照
+                else:
+                    cutoff = now
         if u.path == "/api/resonance":
             reskey = (date, cutoff)
             if date and reskey in _rescache:
@@ -646,8 +688,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(json.dumps({"error": str(e)}, ensure_ascii=False))
             except Exception as e:
                 traceback.print_exc()
-                self._send(json.dumps({"error": f"内部错误: {type(e).__name__}: {e}"},
-                                      ensure_ascii=False))
+                self._send_error(e)
             return
         if u.path == "/api/continuation_group":
             key = (date, cutoff)
@@ -667,8 +708,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(json.dumps({"error": str(e)}, ensure_ascii=False))
             except Exception as e:
                 traceback.print_exc()
-                self._send(json.dumps({"error": f"内部错误: {type(e).__name__}: {e}"},
-                                      ensure_ascii=False))
+                self._send_error(e)
             return
         code = (q.get("code") or [""])[0]
         if not (code.isdigit() and len(code) == 6):
@@ -701,8 +741,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(json.dumps({"error": str(e)}, ensure_ascii=False))
             except Exception as e:
                 traceback.print_exc()
-                self._send(json.dumps({"error": f"内部错误: {type(e).__name__}: {e}"},
-                                      ensure_ascii=False))
+                self._send_error(e)
             return
         key = (code, date, cutoff)
         if date and key in _cache:
@@ -722,10 +761,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(json.dumps({"error": str(e)}, ensure_ascii=False))
         except Exception as e:
             traceback.print_exc()
-            self._send(json.dumps({"error": f"内部错误: {type(e).__name__}: {e}"},
-                                  ensure_ascii=False))
+            self._send_error(e)
 
 
 if __name__ == "__main__":
-    print(f"涨跌预测台已启动: http://127.0.0.1:{PORT}")
+    print(f"涨跌预测台已启动: http://127.0.0.1:{PORT} (PID {os.getpid()})", flush=True)
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

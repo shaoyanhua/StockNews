@@ -25,6 +25,7 @@ import math
 import os
 import socket
 import sys
+import time
 
 import requests
 
@@ -44,6 +45,52 @@ os.makedirs(CACHE, exist_ok=True)
 
 S = requests.Session()
 S.trust_env = False  # 绕过系统代理
+
+
+class RemoteDataError(RuntimeError):
+    """远端行情不可用，且没有可用的本地缓存。"""
+
+
+def _kline_cache_path(code, n, fq):
+    suffix = fq or "raw"
+    return os.path.join(CACHE, f"tencent_kline_{prefix(code)}{code}_{suffix}_{n}.json")
+
+
+def _tencent_kline_bars(code, n=90, fq="qfq"):
+    """腾讯日K：短重试后回退最近一次成功缓存。"""
+    p = prefix(code)
+    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={p}{code},day,,,{n},{fq}"
+    cache_path = _kline_cache_path(code, n, fq)
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = S.get(url, headers={"User-Agent": UA}, timeout=(5, 15))
+            response.raise_for_status()
+            payload = response.json()
+            stock_data = payload["data"][f"{p}{code}"]
+            bars = stock_data.get("qfqday") or stock_data.get("day")
+            if not bars:
+                raise ValueError("返回中没有日K数据")
+            tmp_path = cache_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(bars, f, ensure_ascii=False)
+            os.replace(tmp_path, cache_path)
+            return bars
+        except (requests.RequestException, KeyError, TypeError, ValueError) as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+
+    try:
+        with open(cache_path, encoding="utf-8") as f:
+            bars = json.load(f)
+        if bars:
+            return bars
+    except (OSError, ValueError, TypeError):
+        pass
+    raise RemoteDataError(
+        f"腾讯日K接口暂不可用，且无本地缓存（{code}）：{type(last_error).__name__}: {last_error}"
+    ) from last_error
 
 
 # ───────────────────────── 基础工具 ─────────────────────────
@@ -71,10 +118,7 @@ def tdx_connect():
 
 def tencent_kline(code, n=90, fq="qfq"):
     """日K: [(date, close)]. fq="qfq"前复权(算涨跌幅), fq=""不复权(与分笔原始价同口径)"""
-    p = prefix(code)
-    u = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={p}{code},day,,,{n},{fq}"
-    d = S.get(u, headers={"User-Agent": UA}, timeout=15).json()["data"][f"{p}{code}"]
-    bars = d.get("qfqday") or d.get("day")
+    bars = _tencent_kline_bars(code, n, fq)
     return [(b[0], float(b[2])) for b in bars]
 
 def tencent_realtime(codes):
@@ -123,10 +167,7 @@ def tencent_realtime(codes):
 
 def tencent_kline_vol(code, n=90):
     """日K成交量(手, 不复权): {date: vol} — 用于校验分笔完整性"""
-    p = prefix(code)
-    u = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={p}{code},day,,,{n},"
-    d = S.get(u, headers={"User-Agent": UA}, timeout=15).json()["data"][f"{p}{code}"]
-    bars = d.get("day") or d.get("qfqday")
+    bars = _tencent_kline_bars(code, n, "")
     return {b[0]: float(b[5]) for b in bars if len(b) > 5}
 
 def em_flow_check(code, date=None):
