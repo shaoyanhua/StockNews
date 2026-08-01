@@ -700,7 +700,8 @@ function topCard(d) {
   return `<div class="contcard ${envCls}">
     <div class="conthead"><h3>${d.name} <span class="meta">${d.code}</span></h3>
       <div class="scorebox"><b>${d.price.toFixed(2)}</b><span class="${cls(d.self_pct)}">${sgn(d.self_pct,'%')}</span></div></div>
-    <div class="contstate">${d.date} ${d.cutoff}时点 · 涨停 ${d.limit_up.toFixed(2)} · 环境${d.env.stance}</div>
+    <div class="contstate">${d.date} ${d.cutoff}时点 · 涨停 ${d.limit_up.toFixed(2)} · 环境${d.env.stance}`+
+    `${d.trend?` · MA20${d.trend.side==='above'?'上方':'下方'} <b class="${cls(d.trend.dist_pct)}">${sgn(d.trend.dist_pct,'%')}</b>`:''}</div>
     <div class="residx">${boardTxt} · ${idx}</div>
     ${warns}${surge}
     <div class="probgrid">${est}</div>

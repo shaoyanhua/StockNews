@@ -665,6 +665,15 @@ def top_forecast(code, date=None, cutoff="10:00", train=240, leader=None,
     resistance, support, limit_up = structural_levels(
         hist_bars, px, prev_close, code, intraday_info)
 
+    # 趋势开关(60日回测: MA20下方高抛胜率73%, 上方≈五五开; 低吸端相反)
+    c20 = [b["close"] for b in hist_bars[-20:]]
+    ma20_val = sum(c20) / len(c20) if c20 else None
+    trend = None
+    if ma20_val:
+        trend = {"ma20": round(ma20_val, 2),
+                 "dist_pct": round((px / ma20_val - 1) * 100, 2),
+                 "side": "above" if px >= ma20_val else "below"}
+
     def price_at(pct):
         return round(min(px * (1 + pct / 100), limit_up), 2)
 
@@ -729,11 +738,23 @@ def top_forecast(code, date=None, cutoff="10:00", train=240, leader=None,
         elif crash and crash["active"]:
             advice.append("暴跌日特征触发: 暂缓低吸, 等企稳信号")
         # 低吸联动否决(单条件即提示): 回测显示触及低吸区时龙头/板块负联动
-        # 是接飞刀的主要亏损来源, 守卫未满2条件也应暂缓
-        intraday_est["dip_veto"] = bool(crash and any(
-            c["met"] for c in crash["conditions"] if c["key"] in ("leader", "board")))
+        # 或创业板走弱, 是接飞刀的主要亏损来源, 守卫未满2条件也应暂缓
+        idx_growth = indices.get("创业板指")
+        intraday_est["dip_veto"] = bool(
+            (crash and any(c["met"] for c in crash["conditions"]
+                           if c["key"] in ("leader", "board"))) or
+            (idx_growth is not None and idx_growth <= -1.0))
         if intraday_est["dip_veto"] and not (crash and crash["active"]):
-            advice.append("联动否决在线(龙头/板块走弱): 触及低吸区暂不接, 待联动转正")
+            advice.append("联动否决在线(龙头/板块/创业板走弱): 触及低吸区暂不接, 待联动转正")
+        # 大盘强拉升日(6-7月回测: 该类日顶部分布显著右移, 触区卖出多为卖飞)
+        if idx_growth is not None and idx_growth >= 2.0:
+            advice.append("创业板≥+2%(大盘强拉升日): 高抛端建议停做一天, 持股为主")
+        # 趋势开关(60日回测: 高抛端做空日内动量, 只在弱势段有优势)
+        if trend:
+            advice.append("MA20下方(弱势段): 高抛为主力打法, 低吸默认关闸"
+                          if trend["side"] == "below" else
+                          "MA20上方(强势段): 高抛只减仓/小仓T(实测≈五五开), "
+                          "低吸可做(带否决+反弹1.5%止盈)")
         intraday_est["t_advice"] = " | ".join(advice)
         if date:
             ex = post_cutoff_extremes(target_ticks, cutoff, px)
@@ -796,7 +817,7 @@ def top_forecast(code, date=None, cutoff="10:00", train=240, leader=None,
                 "band": [qlo, qhi]},
         "resistance": resistance, "support": support,
         "intraday": intraday_est, "multiday": multiday_est,
-        "surge": surge, "crash": crash,
+        "surge": surge, "crash": crash, "trend": trend,
         "samples": len(prelim), "warnings": warnings,
         "method": ("结构压力位(筹码密集/前高/均线/整数关/涨停/日内) × "
                    "历史相似盘面剩余上冲分位 × 大盘板块环境档位调节; "
