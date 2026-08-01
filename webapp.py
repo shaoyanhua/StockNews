@@ -21,6 +21,7 @@ from predict_updown import (run_prediction, day_ticks, today_ticks, amount_at,
                             tdx_connect, tencent_kline, tencent_realtime, S, UA,
                             RemoteDataError)
 from continuation_analysis import continuation_run
+from resistance_levels import top_forecast
 
 PORT = int(os.environ.get("STOCKNEWS_PORT", "8688"))
 STOCKS = [("300308", "中际旭创"), ("002384", "东山精密"), ("688256", "寒武纪"),
@@ -38,6 +39,7 @@ _cache = {}                        # (code,date,cutoff) -> result, 仅缓存回�
 _rescache = {}                     # (date,cutoff) -> 共振结果, 仅缓存回测
 _contcache = {}                    # (code,date,cutoff) -> 延续分析, 仅缓存回测
 _contgroupcache = {}               # (date,cutoff) -> 四股延续分析, 仅缓存回测
+_topcache = {}                     # (code,date,cutoff) -> 压力位/顶部预估, 仅缓存回测
 
 
 def _index_pcts(date):
@@ -304,6 +306,7 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
   <button id="run" onclick="run()">运行预测</button>
   <button id="runRes" onclick="runResonance()">共振预测</button>
   <button id="runCont" onclick="runContinuation()">上涨延续系统</button>
+  <button id="runTop" onclick="runTop()">压力位/做T</button>
   <span class="status" id="status"></span>
 </div>
 <div class="disc"><b>我的纪律</b>
@@ -315,6 +318,7 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
 <div class="grid" id="grid"></div>
 <div id="resPanel"></div>
 <div id="contPanel"></div>
+<div id="topPanel"></div>
 <p class="note">首次跑某只股票需重构约40天分笔(1~3分钟), 之后有本地缓存(约10秒)。
 实时模式请在交易时段使用; 回测日期需为交易日。资金流为分笔重构口径, 与东财APP绝对值不可直接对照。</p>
 <script>
@@ -412,7 +416,7 @@ async function apiJson(url, timeoutMs=240000, retry=true) {
 async function run() {
   const sel = $('code').value;
   const codes = sel === 'ALL' ? __ALL_CODES__ : [sel];
-  $('run').disabled = true; $('runRes').disabled = true; $('runCont').disabled = true;
+  $('run').disabled = true; $('runRes').disabled = true; $('runCont').disabled = true; $('runTop').disabled = true;
   $('grid').innerHTML = '';
   for (const c of codes) {
     $('status').textContent = `${c} 计算中(首次1~3分钟)...`;
@@ -425,7 +429,7 @@ async function run() {
     }
   }
   $('status').textContent = '完成';
-  $('run').disabled = false; $('runRes').disabled = false; $('runCont').disabled = false;
+  $('run').disabled = false; $('runRes').disabled = false; $('runCont').disabled = false; $('runTop').disabled = false;
 }
 
 function resStyle(score) {
@@ -482,7 +486,7 @@ async function runResonance() {
     params.set('date', $('date').value);
   }
   const q = '/api/resonance' + (params.toString() ? '?' + params.toString() : '');
-  $('run').disabled = true; $('runRes').disabled = true; $('runCont').disabled = true;
+  $('run').disabled = true; $('runRes').disabled = true; $('runCont').disabled = true; $('runTop').disabled = true;
   $('status').textContent = '共振预测计算中(需拉4只股票, 首次1~3分钟)...';
   $('resPanel').innerHTML = '';
   try {
@@ -492,7 +496,7 @@ async function runResonance() {
     $('resPanel').innerHTML = `<div class="respanel"><div class="err">${e.message}</div></div>`;
   }
   $('status').textContent = '完成';
-  $('run').disabled = false; $('runRes').disabled = false; $('runCont').disabled = false;
+  $('run').disabled = false; $('runRes').disabled = false; $('runCont').disabled = false; $('runTop').disabled = false;
 }
 
 function probText(v) { return v === null || v === undefined ? '样本不足' : pct(v); }
@@ -574,7 +578,7 @@ async function fetchContinuation(code) {
 async function runContinuation() {
   const selected = $('code').value;
   const codes = selected === 'ALL' ? __RES_CODES__ : [selected];
-  $('run').disabled = true; $('runRes').disabled = true; $('runCont').disabled = true;
+  $('run').disabled = true; $('runRes').disabled = true; $('runCont').disabled = true; $('runTop').disabled = true;
   $('contPanel').innerHTML = `<div class="contpanel"><div class="conttitle">`+
     `<h2>上涨延续系统</h2><span class="status">计算中…</span></div><div class="contgrid" id="contGrid"></div></div>`;
   if (selected === 'ALL') {
@@ -605,7 +609,134 @@ async function runContinuation() {
   const st = $('contPanel').querySelector('.conttitle .status');
   if (st && selected !== 'ALL') st.textContent = '完成';
   $('status').textContent = '完成';
-  $('run').disabled = false; $('runRes').disabled = false; $('runCont').disabled = false;
+  $('run').disabled = false; $('runRes').disabled = false; $('runCont').disabled = false; $('runTop').disabled = false;
+}
+
+function lvlRows(levels) {
+  return (levels||[]).map(l => `<tr><td>${l.price.toFixed(2)}</td>`+
+    `<td class="${cls(l.dist_pct)}">${sgn(l.dist_pct,'%')}</td>`+
+    `<td>${l.strength}</td><td>${l.tags.join('/')}</td></tr>`).join('');
+}
+function lvlTable(title, levels) {
+  return `<div><div class="meta">${title}</div><table class="book">`+
+    `<tr><th>价位</th><th>距离</th><th>强度</th><th>来源</th></tr>${lvlRows(levels)}</table></div>`;
+}
+function estItem(label, e) {
+  if (!e) return '';
+  return `<div class="probitem"><b>${e.price.toFixed(2)}</b>${label} ${sgn(e.pct,'%')}</div>`;
+}
+function topCard(d) {
+  const envCls = d.env.step > 0 ? 'strong' : (d.env.step < 0 ? 'weak' : 'mid');
+  const it = d.intraday, md = d.multiday;
+  const idx = Object.entries(d.env.indices||{}).map(([k,v])=>`${k} ${sgn(v,'%')}`)
+    .join(' · ') || '指数数据不可用';
+  const boardTxt = d.env.board_pct === null ? '板块数据缺失' :
+    `板块代理(${(d.env.board_proxies||[]).join('/')}) <b class="${cls(d.env.board_pct)}">${sgn(d.env.board_pct,'%')}</b>`;
+  const warns = (d.warnings||[]).map(w=>`<div class="warn">⚠️ ${w}</div>`).join('');
+  let surge = '';
+  if (d.surge) {
+    const s = d.surge;
+    const lead = s.leader && s.leader.pct_now !== null && s.leader.pct_now !== undefined ?
+      `联动龙头 ${s.leader.name} <b class="${cls(s.leader.pct_now)}">${sgn(s.leader.pct_now,'%')}</b> · ` : '';
+    const condHtml = s.conditions.map(c =>
+      `<li class="${c.met?'plus':''}">${c.met?'⚡':'·'} ${c.name}`+
+      `${c.hist_rate!==null?`（历史该条件下暴涨率 ${pct(c.hist_rate)}，n=${c.n}）`:''}</li>`).join('');
+    if (s.active) {
+      const cq = s.cond_quantiles;
+      surge = `<div class="warn">⚡ 暴涨日特征触发 — ${lead}`+
+        (cq ? `同条件${cq.n}日上冲 P50 ${sgn(cq.q50,'%')} / P80 ${sgn(cq.q80,'%')} / P90 ${sgn(cq.q90,'%')}，`+
+              `高抛区已上移，<b>只减不清</b>`
+            : `同条件历史样本不足，高抛区未上移，建议只减不清`) + `</div>`;
+    } else {
+      surge = `<div class="meta">暴涨守卫未触发（${lead}暴涨=上冲≥${s.thr_pct}%，基础概率 ${pct(s.base_rate)}）</div>`;
+    }
+    surge += `<details><summary>暴涨守卫条件明细</summary><ul class="reasonlist">${condHtml}</ul></details>`;
+  }
+  if (d.crash) {
+    const s = d.crash;
+    const condHtml = s.conditions.map(c =>
+      `<li class="${c.met?'minus':''}">${c.met?'🔻':'·'} ${c.name}`+
+      `${c.hist_rate!==null?`（历史该条件下暴跌率 ${pct(c.hist_rate)}，n=${c.n}）`:''}</li>`).join('');
+    if (s.active) {
+      const cq = s.cond_quantiles;
+      surge += `<div class="warn">🔻 暴跌日特征触发 — `+
+        (cq ? `同条件${cq.n}日下杀 P50 ${sgn(cq.q50,'%')} / P20 ${sgn(cq.q20,'%')} / P10 ${sgn(cq.q10,'%')}，`+
+              `低吸区已下移，<b>不接飞刀</b>，收复分时均价线再接`
+            : `同条件历史样本不足，建议暂缓低吸，等企稳信号`) + `</div>`;
+    }
+    surge += `<details><summary>暴跌守卫条件明细（暴跌=下杀≤${s.thr_pct}%，基础概率 ${pct(s.base_rate)}）</summary>`+
+      `<ul class="reasonlist">${condHtml}</ul></details>`;
+  }
+  let est = '';
+  if (it) est += estItem('当日顶P50', it.q50) + estItem('当日顶P80', it.q80);
+  if (md) est += estItem('3日顶P50', md.q50) + estItem('3日顶P80', md.q80);
+  let zones;
+  if (it) {
+    const snapTxt = it.snap ? `，≈压力位 <b>${it.snap.price.toFixed(2)}</b>（${it.snap.tags.join('/')}）` : '';
+    const bandTxt = it.surge_shift && it.base_sell_zone ?
+      `暴涨守卫上移，常规区 ${it.base_sell_zone[0].toFixed(2)}~${it.base_sell_zone[1].toFixed(2)}` :
+      `环境${d.env.stance}取P${Math.round(d.env.band[0]*100)}~P${Math.round(d.env.band[1]*100)}`;
+    zones = `<div class="advice"><b>高抛区：</b>${it.sell_zone[0].toFixed(2)} ~ ${it.sell_zone[1].toFixed(2)}`+
+      `（${bandTxt}${it.capped_by_limit?'，触涨停截断':''}）${snapTxt}<br>`+
+      `<b>低吸区：</b>${it.dip_veto?'<b style="color:var(--up)">⚠️联动否决在线，暂不接</b> ':''}`+
+      `${it.dip_zone[0].toFixed(2)} ~ ${it.dip_zone[1].toFixed(2)}`+
+      `（${it.crash_shift&&it.base_dip_zone?`暴跌守卫下移，常规区 ${it.base_dip_zone[0].toFixed(2)}~${it.base_dip_zone[1].toFixed(2)}`:'相似日回撤P20~P50'}；破分时均价 ${d.vwap.toFixed(2)} 不接）`+
+      `${it.t_advice?`<br><b>操作：</b>${it.t_advice}`:''}</div>`;
+  } else {
+    zones = `<div class="advice">时点已晚，当日剩余时间不足，仅参考3日顶部与压力位</div>`;
+  }
+  let timing = '';
+  if (it && it.high_time) timing = `顶部时间：相似日中位 ${it.high_time.median}，`+
+    `${pct(it.high_time.before_1130)}出现在11:30前，${pct(it.high_time.before_1400)}在14:00前`;
+  let valid = '';
+  if (it && it.validation) valid = ` · 走步验证${it.validation.n}天：P80覆盖率`+
+    `${pct(it.validation.coverage80)}，P50中位误差${it.validation.median_err50}%`;
+  let actual = '';
+  if (it && it.actual) actual += `<div class="actual">回测实际：之后最高 <b>${it.actual.high.toFixed(2)}</b>`+
+    `（${sgn(it.actual.pct,'%')}）于 ${it.actual.time} ${it.actual.hit_zone?'✓触及高抛区':'✗未及高抛区'}</div>`;
+  if (md && md.actual) actual += `<div class="actual">回测实际3日最高：<b>${md.actual.high.toFixed(2)}</b>`+
+    `（${sgn(md.actual.pct,'%')}）</div>`;
+  const mdSnap = md && md.snap ? ` · 3日顶≈压力位 ${md.snap.price.toFixed(2)}（${md.snap.tags.join('/')}）` : '';
+  return `<div class="contcard ${envCls}">
+    <div class="conthead"><h3>${d.name} <span class="meta">${d.code}</span></h3>
+      <div class="scorebox"><b>${d.price.toFixed(2)}</b><span class="${cls(d.self_pct)}">${sgn(d.self_pct,'%')}</span></div></div>
+    <div class="contstate">${d.date} ${d.cutoff}时点 · 涨停 ${d.limit_up.toFixed(2)} · 环境${d.env.stance}</div>
+    <div class="residx">${boardTxt} · ${idx}</div>
+    ${warns}${surge}
+    <div class="probgrid">${est}</div>
+    ${zones}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem;margin-top:.5rem">
+      ${lvlTable('上方压力位', d.resistance)}${lvlTable('下方支撑位', d.support)}
+    </div>
+    ${actual}
+    <div class="contfoot">${timing}${mdSnap}<br>历史样本${d.samples}天(相似盘面${it?it.n_analogs:'—'}个)${valid}<br>${d.method}</div>
+  </div>`;
+}
+async function runTop() {
+  const selected = $('code').value;
+  const codes = selected === 'ALL' ? __ALL_CODES__ : [selected];
+  $('run').disabled = true; $('runRes').disabled = true; $('runCont').disabled = true; $('runTop').disabled = true;
+  $('topPanel').innerHTML = `<div class="contpanel"><div class="conttitle">`+
+    `<h2>动态压力位 · 顶部预估</h2><span class="status">计算中…</span></div>`+
+    `<div class="contgrid" id="topGrid"></div></div>`;
+  for (const code of codes) {
+    $('status').textContent = `${code} 压力位计算中（首次需重构240天分笔，可能5~10分钟）...`;
+    try {
+      const params = new URLSearchParams({code});
+      if ($('mode').value === 'backtest') {
+        params.set('date', $('date').value); params.set('cutoff', $('cutoff').value);
+      }
+      const d = await apiJson('/api/top?' + params.toString(), 600000);
+      $('topGrid').insertAdjacentHTML('beforeend', topCard(d));
+    } catch (e) {
+      $('topGrid').insertAdjacentHTML('beforeend',
+        `<div class="contcard weak"><h3>${code}</h3><div class="err">${e.message}</div></div>`);
+    }
+  }
+  const st = $('topPanel').querySelector('.conttitle .status');
+  if (st) st.textContent = '完成';
+  $('status').textContent = '完成';
+  $('run').disabled = false; $('runRes').disabled = false; $('runCont').disabled = false; $('runTop').disabled = false;
 }
 </script></body></html>"""
 
@@ -653,7 +784,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(PAGE, "text/html; charset=utf-8")
             return
         if u.path not in ("/api/predict", "/api/resonance", "/api/continuation",
-                          "/api/continuation_group"):
+                          "/api/continuation_group", "/api/top"):
             self._send('{"error":"not found"}', status=404)
             return
         q = parse_qs(u.query)
@@ -713,6 +844,31 @@ class Handler(BaseHTTPRequestHandler):
         code = (q.get("code") or [""])[0]
         if not (code.isdigit() and len(code) == 6):
             self._send(json.dumps({"error": "无效代码"}, ensure_ascii=False))
+            return
+        if u.path == "/api/top":
+            try:
+                train = max(30, min(400, int((q.get("train") or ["240"])[0])))
+            except ValueError:
+                train = 240
+            key = (code, date, cutoff, train)
+            if date and key in _topcache:
+                self._send(json.dumps(_topcache[key], ensure_ascii=False))
+                return
+            try:
+                with _lock:
+                    if date and key in _topcache:
+                        result = _topcache[key]
+                    else:
+                        result = top_forecast(code, date, cutoff, train,
+                                              progress=lambda m: print(f"  {m}"))
+                        if date:
+                            _topcache[key] = result
+                self._send(json.dumps(result, ensure_ascii=False))
+            except ValueError as e:
+                self._send(json.dumps({"error": str(e)}, ensure_ascii=False))
+            except Exception as e:
+                traceback.print_exc()
+                self._send_error(e)
             return
         if u.path == "/api/continuation":
             key = (code, date, cutoff)
