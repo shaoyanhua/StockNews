@@ -1,0 +1,507 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "蓝盾光电、百花医药连板机制与可比股筛选",
+    "description": "截至2026年8月14日收盘，从题材、催化与炒作结构拆解两只连板股，并筛选当前及近期可比标的。",
+    "generatedAt": "2026-08-14T18:20:00+08:00",
+    "filters": [],
+    "cards": [],
+    "charts": [
+      {
+        "id": "active_analogs_chart",
+        "title": "当前可比股相似度",
+        "subtitle": "截至2026年8月14日；题材、催化、流通盘弹性与连板位置的0–100启发式评分，不代表上涨概率",
+        "type": "bar",
+        "dataset": "active_analogs",
+        "source": {
+          "id": "analysis_synthesis",
+          "label": "2026-08-14公开行情、公告与涨停池复核",
+          "path": "sources/source_notes.md",
+          "query": {
+            "engine": "sqlite",
+            "language": "sql",
+            "executed_at": "2026-08-14T16:45:00+08:00",
+            "description": "将已复核的公开行情、公告和涨停池样本物化为可比股图表数据；原始链接与计算见来源笔记。",
+            "sql": "SELECT '博济医药 300404' AS stock, '2连板（20%）' AS boards, '全流程CRO' AS theme, 90 AS similarity_score UNION ALL SELECT '澳洋健康 002172', '3连板（10%）', '医疗服务/低价医疗', 82 UNION ALL SELECT '华西股份 000936', '3连板（10%）', '光通信/CPO', 78 UNION ALL SELECT '天洋新材 603330', '3连板（10%）', '光通信材料映射', 73 UNION ALL SELECT '神奇制药 600613', '2连板（10%）', '低价医药', 70 UNION ALL SELECT '共进股份 603118', '2连板（10%）', '通信设备/光通信', 67 ORDER BY similarity_score DESC"
+          }
+        },
+        "valueFormat": "number",
+        "encodings": {
+          "x": { "field": "stock", "type": "nominal", "label": "股票" },
+          "y": { "field": "similarity_score", "type": "quantitative", "label": "相似度" },
+          "tooltip": [
+            { "field": "boards", "type": "nominal", "label": "连板" },
+            { "field": "theme", "type": "nominal", "label": "题材/催化" }
+          ]
+        }
+      },
+      {
+        "id": "pre_start_candidates_chart",
+        "title": "尚未连板候选观察优先级",
+        "subtitle": "截至2026年8月14日；综合催化硬度、题材辨识度、后续节点与近端位置，不代表上涨概率",
+        "type": "bar",
+        "dataset": "pre_start_candidates",
+        "source": {
+          "id": "pre_start_synthesis",
+          "label": "重组公告、审核进度与近20日日K复核",
+          "path": "sources/pre_start_source_notes.md",
+          "query": {
+            "engine": "sqlite",
+            "language": "sql",
+            "executed_at": "2026-08-14T18:20:00+08:00",
+            "description": "将已复核的重组进度、题材、后续节点和近端行情物化为尚未连板候选排序；分数是观察优先级，不是概率。",
+            "sql": "SELECT '新铝时代 301613' AS stock, '硬重组' AS category, 86 AS launch_score UNION ALL SELECT '概伦电子 688206','硬重组',84 UNION ALL SELECT '石基信息 002153','资产整合',79 UNION ALL SELECT '国投中鲁 600962','央企重组',77 UNION ALL SELECT '狮头股份 600539','跨界重组',73 UNION ALL SELECT '通光线缆 300265','题材补涨',69 ORDER BY launch_score DESC"
+          }
+        },
+        "valueFormat": "number",
+        "encodings": {
+          "x": { "field": "stock", "type": "nominal", "label": "股票" },
+          "y": { "field": "launch_score", "type": "quantitative", "label": "观察分" },
+          "tooltip": [
+            { "field": "category", "type": "nominal", "label": "类型" },
+            { "field": "catalyst", "type": "nominal", "label": "催化" },
+            { "field": "ret10", "type": "nominal", "label": "近10日" }
+          ]
+        }
+      }
+    ],
+    "tables": [
+      {
+        "id": "two_stock_table",
+        "title": "两只股票的连板逻辑对照",
+        "subtitle": "截至2026年8月14日收盘；价格、换手和公告边界均已核对",
+        "dataset": "two_stock_summary",
+        "source": {
+          "id": "two_stock_synthesis",
+          "label": "两只股票公告与行情复核",
+          "path": "sources/source_notes.md",
+          "query": {
+            "engine": "sqlite",
+            "language": "sql",
+            "executed_at": "2026-08-14T16:45:00+08:00",
+            "description": "将已复核的两只股票公告事实、市场题材和交易结构物化为对照表。",
+            "sql": "SELECT '百花医药 600721' AS stock, '金华国资入主' AS verified_catalyst, 'CRO/创新药映射、国企改革、低价小市值' AS market_theme, '7连板后断板' AS structure, '不涉及创新药研发；36个月无明确重组安排' AS hard_boundary, '高位分歧后退潮确认' AS current_stage UNION ALL SELECT '蓝盾光电 300862', '收购岚创科技控制权的重组预案', '光通信/CPO上游镀膜设备、国产替代', '复牌5连板，第5板换手51.69%', '审计、评估、作价未完成；交易可能中止', '一字加速转巨量换手博弈'"
+          }
+        },
+        "defaultSort": { "field": "stock", "direction": "asc" },
+        "density": "spacious",
+        "columns": [
+          { "field": "stock", "label": "股票", "type": "text" },
+          { "field": "verified_catalyst", "label": "已证实催化", "type": "text" },
+          { "field": "market_theme", "label": "市场题材", "type": "text" },
+          { "field": "structure", "label": "交易结构", "type": "text" },
+          { "field": "hard_boundary", "label": "关键边界", "type": "text" },
+          { "field": "current_stage", "label": "当前阶段", "type": "text" }
+        ]
+      },
+      {
+        "id": "active_analogs_table",
+        "title": "当前活跃可比股",
+        "subtitle": "8月14日涨停池；相似度只衡量题材、催化与筹码结构，不代表上涨概率",
+        "dataset": "active_analogs",
+        "source": {
+          "id": "active_analogs_synthesis",
+          "label": "2026-08-14涨停池与公司公告复核",
+          "path": "sources/source_notes.md",
+          "query": {
+            "engine": "sqlite",
+            "language": "sql",
+            "executed_at": "2026-08-14T16:45:00+08:00",
+            "description": "将已复核的当日可比股题材、筹码和风险信息物化为排序表。",
+            "sql": "SELECT '博济医药 300404' AS stock, '2连板（20%）' AS boards, '全流程CRO' AS theme, '49.5亿元' AS float_cap, '27.5%' AS turnover, '百花医药最纯CRO补涨' AS speculation_role, 90 AS similarity_score, '无新增公司级催化' AS main_risk UNION ALL SELECT '澳洋健康 002172','3连板（10%）','医疗服务/低价医疗','34.7亿元','2.5%','低价医疗情绪高标',82,'无新增重大催化' UNION ALL SELECT '华西股份 000936','3连板（10%）','光通信/CPO','61.7亿元','15.5%','光通信温度计',78,'H1预亏' UNION ALL SELECT '天洋新材 603330','3连板（10%）','光通信材料映射','43.4亿元','6.2%','小盘光通信共振',73,'2025年亏损' UNION ALL SELECT '神奇制药 600613','2连板（10%）','低价医药','30.7亿元','2.6%','医药情绪补涨',70,'公司称不涉及市场热点概念' UNION ALL SELECT '共进股份 603118','2连板（10%）','通信设备/光通信','138.2亿元','14.3%','产业链纯度较高',67,'炸板较多、分歧明显' ORDER BY similarity_score DESC"
+          }
+        },
+        "defaultSort": { "field": "similarity_score", "direction": "desc" },
+        "density": "spacious",
+        "columns": [
+          { "field": "stock", "label": "股票", "type": "text" },
+          { "field": "boards", "label": "连板", "type": "text" },
+          { "field": "theme", "label": "题材/催化", "type": "text" },
+          { "field": "float_cap", "label": "流通市值", "type": "text" },
+          { "field": "turnover", "label": "换手率", "type": "text" },
+          { "field": "speculation_role", "label": "炒作角色", "type": "text" },
+          { "field": "similarity_score", "label": "相似度", "type": "number" },
+          { "field": "main_risk", "label": "主要风险", "type": "text" }
+        ]
+      },
+      {
+        "id": "pre_start_candidates_table",
+        "title": "尚未连板候选：催化、位置与验证条件",
+        "subtitle": "只列截至8月14日未形成连续涨停的标的；先看公告硬度，再看量价确认",
+        "dataset": "pre_start_candidates",
+        "source": {
+          "id": "pre_start_synthesis",
+          "label": "重组公告、审核进度与近20日日K复核",
+          "path": "sources/pre_start_source_notes.md",
+          "query": {
+            "engine": "sqlite",
+            "language": "sql",
+            "executed_at": "2026-08-14T18:20:00+08:00",
+            "description": "将六只尚未连板候选的事件阶段、短线位置、启动确认与失效条件物化为观察表。",
+            "sql": "SELECT '新铝时代 301613' AS stock,'硬重组' AS category,'收购宏联电子100%股权；过会且注册申请获接收' AS catalyst,'近10日+5.35%；距20日高点5.25%' AS position,'注册结果或实施进展' AS next_node,'放量突破区间高点且板块共振' AS confirmation,'注册受阻、交易调整或放量跌破平台' AS invalidation,86 AS launch_score UNION ALL SELECT '概伦电子 688206','硬重组','收购锐成芯微100%及纳能微45.64%；EDA+IP','近10日+12.33%；距20日高点10.18%','发行实施、资产交割与整合进展','回踩缩量后放量转强','实施延迟、整合/商誉压力或业绩继续亏损',84 UNION ALL SELECT '石基信息 002153','资产整合','收购思迅软件13.5%股权已获注册','近10日+3.17%；8月10日单板后回撤','发行实施与持股整合','回收单板高点并出现持续放量','仅少数股权整合，题材扩展失败',79 UNION ALL SELECT '国投中鲁 600962','央企重组','拟注入中国电子工程设计院100%股权，审核恢复','近10日+5.75%；距20日高点18.95%','上交所审核/证监会注册','放量站回前高压力区','审核再中止、估值分歧或上方套牢盘兑现',77 UNION ALL SELECT '狮头股份 600539','跨界重组','收购机器视觉企业利珀科技97.44%，重组委过会','近10日-0.77%；距20日高点30.11%','证监会注册','底部放量突破下降趋势','高位套牢盘、跨界整合或业绩承诺风险',73 UNION ALL SELECT '通光线缆 300265','题材补涨','光纤光缆/海缆，映射光通信主线；8月29日半年报','近10日+12.19%；距20日高点3.11%','半年报与光通信板块宽度','板块扩散且个股突破不过度缩量','半年报不及预期或板块退潮',69 ORDER BY launch_score DESC"
+          }
+        },
+        "defaultSort": { "field": "launch_score", "direction": "desc" },
+        "density": "spacious",
+        "columns": [
+          { "field": "stock", "label": "股票", "type": "text" },
+          { "field": "category", "label": "类型", "type": "text" },
+          { "field": "catalyst", "label": "题材/催化", "type": "text" },
+          { "field": "position", "label": "当前结构", "type": "text" },
+          { "field": "next_node", "label": "下一节点", "type": "text" },
+          { "field": "confirmation", "label": "启动确认", "type": "text" },
+          { "field": "invalidation", "label": "失效条件", "type": "text" },
+          { "field": "launch_score", "label": "观察分", "type": "number" }
+        ]
+      },
+      {
+        "id": "mechanism_cases_table",
+        "title": "近一个月重组炒作机制案例",
+        "subtitle": "用于观察复牌一字板打开后的换手与回撤，不作为当前买入候选",
+        "dataset": "mechanism_cases",
+        "source": {
+          "id": "mechanism_cases_synthesis",
+          "label": "近一个月重组案例行情复核",
+          "path": "sources/source_notes.md",
+          "query": {
+            "engine": "sqlite",
+            "language": "sql",
+            "executed_at": "2026-08-14T16:45:00+08:00",
+            "description": "将近期跨界科技资产重组案例及其交易路径物化为机制对照表。",
+            "sql": "SELECT '五洲医疗 301234' AS stock, '跨界收购电机控制芯片公司' AS event, '连续3个20%涨停后高波动换手' AS market_pattern, '开板不等于结束，但波动显著上升' AS lesson, 95 AS similarity_score UNION ALL SELECT '爱丽家居 603221','跨界收购存储测试设备资产','连续一字板后剧烈波动','稀缺溢价伴随跳空风险',90 UNION ALL SELECT '恒尚节能 603137','并购切入存储测试资产','见高点后3日累计回撤约34%','筹码松动时流动性迅速消失',85 UNION ALL SELECT '国投中鲁 600962','央企重组注入半导体工程资产','多次涨停但非连续一字加速','硬催化也可走成反复趋势',75 ORDER BY similarity_score DESC"
+          }
+        },
+        "defaultSort": { "field": "similarity_score", "direction": "desc" },
+        "density": "spacious",
+        "columns": [
+          { "field": "stock", "label": "案例", "type": "text" },
+          { "field": "event", "label": "事件", "type": "text" },
+          { "field": "market_pattern", "label": "市场表现", "type": "text" },
+          { "field": "lesson", "label": "对蓝盾光电的启示", "type": "text" },
+          { "field": "similarity_score", "label": "机制相似度", "type": "number" }
+        ]
+      }
+    ],
+    "sources": [
+      {
+        "id": "analysis_synthesis",
+        "label": "2026-08-14公开行情、公告与涨停池复核",
+        "path": "sources/source_notes.md"
+      },
+      {
+        "id": "pre_start_synthesis",
+        "label": "尚未连板候选的公告、审核与行情复核",
+        "path": "sources/pre_start_source_notes.md"
+      }
+    ],
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# 蓝盾光电、百花医药连板机制与可比股筛选"
+      },
+      {
+        "id": "executive_summary",
+        "type": "markdown",
+        "body": "## Executive Summary\n\n- **蓝盾光电的核心是‘真实重组预案 + 光通信主线映射 + 创业板20%涨跌幅’。** 公司拟收购高性能真空镀膜设备厂商岚创科技，标的下游覆盖光通信等热门方向；但审计、评估和最终交易作价尚未完成。8月10日至13日连续四个一字涨停后，8月14日虽收于第5个涨停，换手率已放大到51.69%，说明行情已从信息重估转入高强度筹码博弈。\n\n- **百花医药的核心是‘CRO/创新药板块映射 + 金华国资入主 + 低价小市值辨识度’，公司自身新增基本面催化很弱。** 公司明确称其以小分子化学仿制药研发服务为主，不涉及创新药研发；新控股股东也无未来36个月内明确重组安排。7个涨停后，8月13日已断板，8月14日下跌4.76%，更接近情绪龙头退潮而非新一轮起点。\n\n- **当前最接近百花医药的是博济医药、澳洋健康和神奇制药；最接近蓝盾光电题材映射的是华西股份、天洋新材和共进股份。** 其中博济医药是CRO纯度最高的补涨，澳洋健康是低价医疗情绪高度，华西股份与天洋新材是光通信3连板。\n\n- **若把条件改成‘尚未连板、仍有下一催化节点’，优先观察新铝时代、概伦电子、石基信息和国投中鲁。** 狮头股份的跨界机器视觉弹性更大但套牢盘也更重；通光线缆只有题材与财报节点，催化硬度低于重组股。\n\n- **最重要的交易判断不是‘还能有几个板’，而是催化是否继续硬化。** 蓝盾光电要等审计、估值、业绩承诺和审批进展；百花医药要看CRO板块宽度和是否出现新的公司级信息。没有新硬信息时，巨量换手通常意味着预期已经充分交易。"
+      },
+      {
+        "id": "different_engines",
+        "type": "markdown",
+        "body": "## 两只股票看似同为连板，驱动引擎并不相同\n\n**蓝盾光电是公告型事件重估，百花医药是板块型情绪扩散。** 前者的故事从上市公司主业承压切换到‘收购稀缺设备资产、进入光通信上游关键装备’；后者则把CRO景气回升、创新药出海、国资标签和低价股弹性叠加在一起。这个差异决定了可比股也要分成‘同题材’和‘同机制’两组。"
+      },
+      {
+        "id": "two_stock_table_block",
+        "type": "table",
+        "tableId": "two_stock_table"
+      },
+      {
+        "id": "blue_detail",
+        "type": "markdown",
+        "body": "## 蓝盾光电：重组是硬催化，光通信是估值放大器\n\n**第一层是已经落地到预案的重大资产重组。** 蓝盾光电拟以发行股份及支付现金方式购买岚创科技控股权并募集配套资金；岚创科技专注高性能真空镀膜设备，在超窄带薄膜滤光片（TFF）设备领域实现商业化量产，应用覆盖光通信、工业激光、医疗光学和消费电子。发行股份购买资产的发行价定为14.50元/股，但标的最终估值和交易价格尚未确定。\n\n**第二层是当下最强的光通信/CPO题材。** 8月14日市场光通信方向有14只涨停，华西股份、天洋新材走出3连板，共进股份2连板。蓝盾光电的重组标的恰好处于这一主线的上游设备环节，使独立公告行情获得了板块共振。\n\n**第三层是‘第二增长曲线’的巨大预期差。** 公司2025年营收同比下降34.53%、归母净利润亏损8876.65万元；2026年一季度营收继续下降13.20%、亏损866.43万元。原主业弱、收购资产叙事强，最容易形成估值跃迁，但也意味着股价更依赖交易成功和标的质量。\n\n**炒作结构已经改变。** 复牌前收盘价19.01元，8月14日收于47.29元，累计上涨148.76%。前四天是一字板，第五天盘中5次开板、振幅14.79%、成交额34.95亿元。这里的含义不是催化失效，而是低成本筹码开始兑现，后续必须依靠更硬的交易细节承接。"
+      },
+      {
+        "id": "bai_detail",
+        "type": "markdown",
+        "body": "## 百花医药：产业主线提供火种，低价国资标签完成情绪加速\n\n**产业层面确有板块催化，但不是百花医药独享。** 8月13日至14日医药方向分别有14只和10只涨停；市场交易的主线包括1—7月中国创新药BD交易总额约1063亿美元、海外CXO龙头上调指引，以及药明康德中报超预期并上调全年目标。百花医药因CRO身份被纳入这一估值修复链条。\n\n**个股层面真正增加辨识度的是金华国资入主和低价小市值。** 控制权变更已在6月9日完成，实际控制人变为金华市国资委。控制权故事、CRO标签和7元附近起涨价格共同降低了短线资金的记忆成本。\n\n**但公司公告对热门叙事作了明显降温。** 公司明确称不涉及创新药研发，主营小分子化学仿制药CRO；2026年一季度营收同比下降30.68%，净利润同比下降67.94%。截至8月12日滚动市盈率203倍，而行业约35.06倍；新控股股东无未来36个月内明确重组计划。\n\n**因此7连板的主要增量来自情绪和筹码，而非盈利预测上修。** 从8月3日7.20元到8月12日14.03元累计上涨94.86%；8月12日换手34.43%，8月13日换手48.10%并断板，8月14日再跌4.76%。这是一条典型的‘板块龙头—高位分歧—退潮确认’路径。"
+      },
+      {
+        "id": "active_analogs_intro",
+        "type": "markdown",
+        "body": "## 当前可比股：优先看补涨角色，不把相似度当胜率\n\n**博济医药是百花医药最直接的CRO映射，澳洋健康是最接近其低价医疗情绪结构的标的；华西股份和天洋新材则是蓝盾光电最直接的光通信板块温度计。** 表中的相似度按题材重合、催化类型、流通盘弹性和所处连板位置综合打分，只用于找观察对象。"
+      },
+      {
+        "id": "active_analogs_chart_block",
+        "type": "chart",
+        "chartId": "active_analogs_chart"
+      },
+      {
+        "id": "active_analogs_table_block",
+        "type": "table",
+        "tableId": "active_analogs_table"
+      },
+      {
+        "id": "active_analogs_implication",
+        "type": "markdown",
+        "body": "**如何解读这组可比股：** 如果博济医药、澳洋健康继续晋级而医药首板数量扩散，说明百花医药留下的情绪仍在板块内迁移；若高标晋级但首板减少，则更像抱团尾声。对蓝盾光电而言，华西股份、天洋新材和共进股份的强弱能区分‘重组独立行情’与‘光通信主线共振’：板块先退潮而蓝盾继续走强，事件属性更强；板块与蓝盾同步转弱，则题材放大器正在消失。"
+      },
+      {
+        "id": "pre_start_intro",
+        "type": "markdown",
+        "body": "## 尚未连板、仍可能被事件点火的候选\n\n这组名单的排序逻辑是**硬催化优先、下一节点优先、尚未明显透支优先**。新铝时代、概伦电子、石基信息和国投中鲁都有可核验的资产交易；狮头股份的机器视觉跨界重组弹性更强，但30%左右的20日高点距离也说明上方套牢和前期炒作退潮压力更大；通光线缆只按光通信补涨处理，不能与重大重组同权。"
+      },
+      {
+        "id": "pre_start_candidates_chart_block",
+        "type": "chart",
+        "chartId": "pre_start_candidates_chart"
+      },
+      {
+        "id": "pre_start_candidates_table_block",
+        "type": "table",
+        "tableId": "pre_start_candidates_table"
+      },
+      {
+        "id": "pre_start_validation",
+        "type": "markdown",
+        "body": "**启动确认只看两件事同时出现：事件继续硬化 + 量价突破有效。** 过会、注册、实施或资产交割属于事件硬化；放量站上平台或前高、次日不被快速反包属于交易确认。只有消息没有量价，往往只是潜伏；只有放量没有新增信息，往往只是存量资金自救。\n\n**优先级上，新铝时代最均衡，概伦电子题材最硬，石基信息位置最早但重组想象力较弱；国投中鲁和狮头股份更偏高波动反复，通光线缆则必须等8月29日半年报或光通信板块扩散验证。**"
+      },
+      {
+        "id": "mechanism_intro",
+        "type": "markdown",
+        "body": "## 近期同机制案例：一字板打开后，波动通常比趋势更确定\n\n**蓝盾光电最值得类比的不是普通光通信股，而是近期跨界并购、复牌连续一字板的股票。** 五洲医疗、爱丽家居和恒尚节能都经历了‘原主业想象空间有限—收购热门科技资产—连续封板—开板后巨量换手’的路径。它们证明重组股可能继续超预期，也可能在高位快速跌停，关键差异来自标的质量、交易价格、审核进度和筹码锁定。"
+      },
+      {
+        "id": "mechanism_cases_table_block",
+        "type": "table",
+        "tableId": "mechanism_cases_table"
+      },
+      {
+        "id": "next_steps",
+        "type": "markdown",
+        "body": "## 下一步只盯四组验证信号\n\n1. **蓝盾光电重组硬信息：** 标的审计财务、评估值、最终作价、股份/现金比例、业绩承诺、客户集中度、在手订单和审批节奏。任何一项低于市场想象，都会触发重新定价。\n\n2. **蓝盾光电筹码信号：** 8月14日51.69%换手后的次日承接最重要。缩量封板代表高位筹码重新锁定；继续巨量但封不住，代表兑现压力占优。\n\n3. **百花医药板块宽度：** 不只看百花自身，而看博济医药、澳洋健康、神奇制药能否晋级，以及医药首板数量是否增加。高标独涨、首板萎缩通常不是健康扩散。\n\n4. **百花医药公司级新增催化：** 只有新订单、业绩上修、重大合作或控制权后的实质业务安排，才可能把逻辑从‘CRO映射’升级为‘公司兑现’；目前公告尚未提供这些信息。"
+      },
+      {
+        "id": "further_questions",
+        "type": "markdown",
+        "body": "## 仍需回答的问题\n\n- 岚创科技未经审计的收入、利润、现金流和客户集中度究竟如何，能否支撑重组后的每股收益？\n- 蓝盾光电当前价格相对14.50元发行价的巨大溢价，最终会通过多少新增股份和多少现金对价稀释？\n- 百花医药的CRO订单是否真正随行业景气回升，还是仍受项目周期延长和合同单价下降拖累？\n- 金华国资入主后是否会带来订单、管理或融资层面的可量化改善，而非仅停留在股东标签？"
+      },
+      {
+        "id": "caveats",
+        "type": "markdown",
+        "body": "## Caveats and Assumptions\n\n- 本报告以2026年8月14日收盘数据为截止点；涨停池和题材归因是当日快照，后续会迅速变化。\n- ‘炒作因素’是基于公告、板块涨停分布和交易结构的市场解释，不是对单一新闻与股价之间的因果证明。\n- 蓝盾光电重组尚未完成审计、评估、定价和审批，交易可能调整、中止或取消。\n- 相似股票是观察样本，不是推荐名单；连板、低价和小市值同时意味着更高的流动性、跌停和情绪反转风险。\n- 验证等级：**可带 caveat 分享**。行情与公告事实可信度高，题材归因和持续性判断属于中等置信度。"
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-08-14T18:20:00+08:00",
+    "status": "ready",
+    "datasets": {
+      "two_stock_summary": [
+        {
+          "stock": "百花医药 600721",
+          "verified_catalyst": "6月9日完成控制权变更，实控人变为金华市国资委",
+          "market_theme": "CRO/创新药映射、国企改革、低价小市值",
+          "structure": "8月4—12日7连板，累计+94.86%；8月13日断板",
+          "hard_boundary": "不涉及创新药研发；未来36个月无明确重组安排；Q1业绩下滑",
+          "current_stage": "高位分歧后退潮确认"
+        },
+        {
+          "stock": "蓝盾光电 300862",
+          "verified_catalyst": "发行股份及支付现金收购岚创科技控股权的重组预案",
+          "market_theme": "光通信/CPO上游镀膜设备、高端装备国产替代",
+          "structure": "复牌5连板，累计+148.76%；第5板换手51.69%",
+          "hard_boundary": "标的审计、评估、最终作价未完成；交易可能中止；公司仍亏损",
+          "current_stage": "一字加速转巨量换手博弈"
+        }
+      ],
+      "active_analogs": [
+        {
+          "stock": "博济医药 300404",
+          "boards": "2连板（20%）",
+          "theme": "全流程CRO；海外CXO上调指引、药明康德业绩超预期",
+          "float_cap": "49.5亿元",
+          "turnover": "27.5%",
+          "speculation_role": "百花医药最纯CRO补涨，创业板弹性更高",
+          "similarity_score": 90,
+          "main_risk": "公司称无应披露未披露事项，行情主要靠板块"
+        },
+        {
+          "stock": "澳洋健康 002172",
+          "boards": "3连板（10%）",
+          "theme": "医疗服务、民营医院、康养；历史控制权变更标签",
+          "float_cap": "34.7亿元",
+          "turnover": "2.5%",
+          "speculation_role": "低价医疗情绪高度，最像百花的筹码结构",
+          "similarity_score": 82,
+          "main_risk": "公告未确认新增重大催化，缩量板易受情绪反转影响"
+        },
+        {
+          "stock": "华西股份 000936",
+          "boards": "3连板（10%）",
+          "theme": "光通信/CPO，当前主线高度股",
+          "float_cap": "61.7亿元",
+          "turnover": "15.5%",
+          "speculation_role": "蓝盾光电的题材温度计和低价补涨",
+          "similarity_score": 78,
+          "main_risk": "H1预亏1.69—2.05亿元，股权投资退出不确定"
+        },
+        {
+          "stock": "天洋新材 603330",
+          "boards": "3连板（10%）",
+          "theme": "光通信材料映射",
+          "float_cap": "43.4亿元",
+          "turnover": "6.2%",
+          "speculation_role": "小盘光通信情绪共振",
+          "similarity_score": 73,
+          "main_risk": "2025年亏损2.44亿元，公司称基本面未发生重大变化"
+        },
+        {
+          "stock": "神奇制药 600613",
+          "boards": "2连板（10%）",
+          "theme": "低价化学制药/医药板块",
+          "float_cap": "30.7亿元",
+          "turnover": "2.6%",
+          "speculation_role": "医药情绪补涨，盘子和价格接近百花起涨特征",
+          "similarity_score": 70,
+          "main_risk": "公司公告称不涉及市场热点概念，无未披露重大事项"
+        },
+        {
+          "stock": "共进股份 603118",
+          "boards": "2连板（10%）",
+          "theme": "通信设备、超节点、光通信",
+          "float_cap": "138.2亿元",
+          "turnover": "14.3%",
+          "speculation_role": "产业链纯度较高，但流通盘大、短线弹性弱于蓝盾",
+          "similarity_score": 67,
+          "main_risk": "连续炸板较多，成交额19.5亿元，分歧明显"
+        }
+      ],
+      "pre_start_candidates": [
+        {
+          "stock": "新铝时代 301613",
+          "category": "硬重组",
+          "catalyst": "收购宏联电子100%股权；交易过会且注册申请获接收",
+          "position": "近10日+5.35%；距20日高点5.25%",
+          "ret10": "+5.35%",
+          "next_node": "证监会注册结果或交易实施进展",
+          "confirmation": "放量突破区间高点且板块共振",
+          "invalidation": "注册受阻、交易调整或放量跌破平台",
+          "launch_score": 86
+        },
+        {
+          "stock": "概伦电子 688206",
+          "category": "硬重组",
+          "catalyst": "收购锐成芯微100%及纳能微45.64%；形成EDA+IP组合",
+          "position": "近10日+12.33%；距20日高点10.18%",
+          "ret10": "+12.33%",
+          "next_node": "发行实施、资产交割与整合进展",
+          "confirmation": "回踩缩量后放量转强",
+          "invalidation": "实施延迟、整合/商誉压力或业绩继续亏损",
+          "launch_score": 84
+        },
+        {
+          "stock": "石基信息 002153",
+          "category": "资产整合",
+          "catalyst": "收购思迅软件13.5%股权已获证监会注册",
+          "position": "近10日+3.17%；8月10日单板后回撤",
+          "ret10": "+3.17%",
+          "next_node": "发行实施与持股整合",
+          "confirmation": "回收单板高点并出现持续放量",
+          "invalidation": "仅属少数股权整合，题材扩展失败",
+          "launch_score": 79
+        },
+        {
+          "stock": "国投中鲁 600962",
+          "category": "央企重组",
+          "catalyst": "拟注入中国电子工程设计院100%股权，审核恢复",
+          "position": "近10日+5.75%；距20日高点18.95%",
+          "ret10": "+5.75%",
+          "next_node": "上交所审核或证监会注册",
+          "confirmation": "放量站回前高压力区",
+          "invalidation": "审核再中止、估值分歧或上方套牢盘兑现",
+          "launch_score": 77
+        },
+        {
+          "stock": "狮头股份 600539",
+          "category": "跨界重组",
+          "catalyst": "收购机器视觉企业利珀科技97.44%，重组委过会",
+          "position": "近10日-0.77%；距20日高点30.11%",
+          "ret10": "-0.77%",
+          "next_node": "证监会注册",
+          "confirmation": "底部放量突破下降趋势",
+          "invalidation": "高位套牢盘、跨界整合或业绩承诺风险",
+          "launch_score": 73
+        },
+        {
+          "stock": "通光线缆 300265",
+          "category": "题材补涨",
+          "catalyst": "光纤光缆/海缆，映射光通信主线；8月29日半年报",
+          "position": "近10日+12.19%；距20日高点3.11%",
+          "ret10": "+12.19%",
+          "next_node": "半年报与光通信板块宽度",
+          "confirmation": "板块扩散且个股突破不过度缩量",
+          "invalidation": "半年报不及预期或板块退潮",
+          "launch_score": 69
+        }
+      ],
+      "mechanism_cases": [
+        {
+          "stock": "五洲医疗 301234",
+          "event": "跨界收购电机控制芯片公司旋智科技100%股权，交易价格待定",
+          "market_pattern": "7月22—27日连续4个20%涨停，随后高波动换手并继续冲高",
+          "lesson": "与蓝盾同为创业板跨界科技重组；开板不等于结束，但波动显著上升",
+          "similarity_score": 95
+        },
+        {
+          "stock": "爱丽家居 603221",
+          "event": "跨界收购欧康诺，切入存储测试设备",
+          "market_pattern": "7月下旬连续一字板，停牌核查后继续剧烈波动",
+          "lesson": "热门科技资产可带来长时间稀缺溢价，但核查与复牌节奏会放大跳空风险",
+          "similarity_score": 90
+        },
+        {
+          "stock": "恒尚节能 603137",
+          "event": "并购重组切入存储测试资产",
+          "market_pattern": "7月初连续涨停并在7月15日见高点，随后4个交易日累计回撤约34%",
+          "lesson": "重组高标一旦筹码松动，连续跌停会让退出流动性迅速消失",
+          "similarity_score": 85
+        },
+        {
+          "stock": "国投中鲁 600962",
+          "event": "央企重组注入半导体工程设计资产，审核推进",
+          "market_pattern": "7月23日、27日和8月3日多次涨停，但未形成连续一字加速",
+          "lesson": "标的质量与审核进度更硬时，行情也可能走成反复趋势而非纯连板",
+          "similarity_score": 75
+        }
+      ]
+    },
+    "accessIssues": []
+  },
+  "sources": [
+    {
+      "id": "analysis_synthesis",
+      "query": {
+        "engine": "reviewed_public_sources",
+        "description": "Reviewed Eastmoney daily k-lines and limit-up pool, company announcements, and same-day concept snapshots; calculations and source URLs are preserved in sources/source_notes.md.",
+        "executed_at": "2026-08-14T16:45:00+08:00",
+        "language": "markdown"
+      }
+    },
+    {
+      "id": "pre_start_synthesis",
+      "query": {
+        "engine": "reviewed_public_sources",
+        "description": "Reviewed transaction announcements, exchange/CSRC progress, company disclosures and Eastmoney daily k-lines for six non-consecutive-limit-up candidates; source URLs and calculations are preserved in sources/pre_start_source_notes.md.",
+        "executed_at": "2026-08-14T18:20:00+08:00",
+        "language": "markdown"
+      }
+    }
+  ],
+  "package_info": {
+    "originUrl": "artifact://stocknews/2026-08-14-limitup-comparables",
+    "controls": { "edit": false, "refresh": false }
+  }
+}

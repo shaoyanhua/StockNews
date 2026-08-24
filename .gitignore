@@ -1,0 +1,13 @@
+# Python 字节码缓存(自动生成)
+__pycache__/
+*.pyc
+
+# 分笔数据本地缓存(可重拉, 持续增长)
+cache_predict/
+
+# 本地服务运行日志
+webapp.stdout.log
+webapp.stderr.log
+webapp.current.stdout.log
+webapp.current.stderr.log
+webapp.pid

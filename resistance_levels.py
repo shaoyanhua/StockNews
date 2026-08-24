@@ -308,6 +308,28 @@ def _nearest_by(rows, target, keys, limit=30):
     return sorted(pool, key=lambda r: r["mdist"])[:min(limit, len(pool))]
 
 
+def _walk_forward_top3(pool, limit=40):
+    """3日顶部走步验证: 历史池须比测试日早3个交易日以上(top3含未来2日, 防泄漏)"""
+    tests = []
+    start = max(60, len(pool) - limit)
+    for k in range(start, len(pool)):
+        r = pool[k]
+        hist = [p for p in pool[:k] if p["i"] <= r["i"] - 3]
+        if len(hist) < 60:
+            continue
+        nb = _nearest_by(hist, r["features"], MULTIDAY_KEYS, limit=60)
+        tops = [x["outcome"]["top3"] for x in nb]
+        q50, q80 = _quantile(tops, 0.5), _quantile(tops, 0.8)
+        if q50 is not None and q80 is not None:
+            tests.append((q50, q80, r["outcome"]["top3"]))
+    if not tests:
+        return None
+    coverage = sum(a <= q80 for _, q80, a in tests) / len(tests)
+    errs = sorted(abs(a - q50) for q50, _, a in tests)
+    return {"n": len(tests), "coverage80": round(coverage, 2),
+            "median_err50": round(errs[len(errs) // 2], 2)}
+
+
 def _walk_forward_top(rows, limit=40):
     """走步验证: 只用当日之前的样本预测P50/P80剩余上冲, 检查覆盖率与误差"""
     tests = []
@@ -574,7 +596,7 @@ def top_forecast(code, date=None, cutoff="10:00", train=240, leader=None,
             if len(fut) == 2 and i + 2 < ti:
                 top3 = (max([ex["high_px"]] + [b["high"] for b in fut])
                         / f["price"] - 1) * 100
-            prelim.append({"date": d, "features": f,
+            prelim.append({"date": d, "i": i, "features": f,
                            "outcome": dict(ex, top3=top3)})
         if len(prelim) < 25:
             raise ValueError(f"历史有效样本不足({len(prelim)})")
@@ -767,8 +789,9 @@ def top_forecast(code, date=None, cutoff="10:00", train=240, leader=None,
                 }
 
     # ── 3日顶部: 日K上下文相似 ──
+    # 相似日取60个: 4股走步回测中pinball损失/尾部覆盖率均稳定优于30个
     pool = [r for r in prelim if r["outcome"]["top3"] is not None]
-    manalogs = _nearest_by(pool, target, MULTIDAY_KEYS, limit=30)
+    manalogs = _nearest_by(pool, target, MULTIDAY_KEYS, limit=60)
     multiday_est = None
     if manalogs:
         tops = [r["outcome"]["top3"] for r in manalogs]
@@ -781,7 +804,8 @@ def top_forecast(code, date=None, cutoff="10:00", train=240, leader=None,
             "q80": {"pct": round(m80, 2), "price": round(px * (1 + m80 / 100), 2)},
             "op": {"pct": round(m_op, 2), "price": round(px * (1 + m_op / 100), 2),
                    "quantile": qop},
-            "snap": msnap, "n_analogs": len(manalogs), "actual": None,
+            "snap": msnap, "n_analogs": len(manalogs),
+            "validation": _walk_forward_top3(pool), "actual": None,
         }
         if date:
             ex = post_cutoff_extremes(target_ticks, cutoff, px)
@@ -802,6 +826,10 @@ def top_forecast(code, date=None, cutoff="10:00", train=240, leader=None,
     v = intraday_est and intraday_est.get("validation")
     if v and (v["coverage80"] < 0.6 or v["coverage80"] > 0.97):
         warnings.append(f"走步验证P80覆盖率{v['coverage80']:.0%}偏离80%, 分位可信度打折")
+    mv = multiday_est and multiday_est.get("validation")
+    if mv and (mv["coverage80"] < 0.6 or mv["coverage80"] > 0.97):
+        warnings.append(f"3日顶部走步验证P80覆盖率{mv['coverage80']:.0%}偏离80%, "
+                        "3日分位可信度打折")
     if target["volume_ratio"] >= 2.5:
         warnings.append("同时点量比≥2.5, 盘面异动, 历史相似样本代表性下降")
 
@@ -913,6 +941,10 @@ def main():
               f"P50 {md['q50']['price']:.2f} / P80 {md['q80']['price']:.2f}"
               + (f"  ≈压力位 {md['snap']['price']:.2f}"
                  f"({'/'.join(md['snap']['tags'])})" if md["snap"] else ""))
+        if md.get("validation"):
+            v = md["validation"]
+            print(f"  3日走步验证{v['n']}天: P80覆盖率{v['coverage80']:.0%}, "
+                  f"P50中位误差{v['median_err50']}%")
         if md["actual"]:
             print(f"  回测实际3日最高: {md['actual']['high']:.2f}"
                   f"({md['actual']['pct']:+.2f}%)")

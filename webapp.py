@@ -12,7 +12,10 @@
 import json
 import os
 import threading
+import time
 import traceback
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -34,12 +37,70 @@ RES_STOCKS = [("300308", "中际旭创", "光模块/通信设备"),
               ("002384", "东山精密", "PCB/元器件"),
               ("688256", "寒武纪", "半导体")]
 
+# 换赛道雷达: 代码, 名称, 赛道分支 (AI硬件产业链观察池)
+WATCHLIST = [
+    ("300308", "中际旭创", "光模块"), ("300502", "新易盛", "光模块"),
+    ("300394", "天孚通信", "光模块"),
+    ("002463", "沪电股份", "PCB/CCL"), ("002916", "深南电路", "PCB/CCL"),
+    ("600183", "生益科技", "PCB/CCL"), ("300476", "胜宏科技", "PCB/CCL"),
+    ("301217", "铜冠铜箔", "PCB/CCL"),
+    ("601138", "工业富联", "服务器/ODM"), ("002384", "东山精密", "精密制造"),
+    ("688256", "寒武纪", "算力芯片"), ("688041", "海光信息", "算力芯片"),
+    ("688008", "澜起科技", "存储接口"), ("603986", "兆易创新", "存储"),
+    ("001309", "德明利", "存储"), ("301308", "江波龙", "存储"),
+    ("002371", "北方华创", "半导体设备"), ("600584", "长电科技", "封测"),
+    ("002156", "通富微电", "封测"), ("600206", "有研新材", "半导体材料"),
+    ("688146", "中船特气", "半导体材料"), ("600176", "中国巨石", "玻纤材料"),
+    ("000636", "风华高科", "被动元件"),
+    ("002428", "云南锗业", "稀有金属"), ("000657", "中钨高新", "稀有金属"),
+    ("000725", "京东方A", "面板"),
+    # ── 红利/防御 风向标(非交易标的) ──
+    # 作用: 避险资金的去处。成长杀跌的同时红利吸金 = 资金在撤离风险资产,
+    # 是"有重大利空"的经典特征。这几只不进强势榜(不是可切入方向), 只用来判断市场状态。
+    #
+    # 成分由 research_defensive_basket.py 实测选出(近250日中创业板跌≥3%的18天):
+    # 只保留"逆势胜率≥60% 且 大跌日自身仍上涨"的, 每行业取最优。被实测淘汰的:
+    #   保险(平安50%/太保50%/人寿61%但大跌日均为负, 与创业板相关系数为正 +0.13~+0.20
+    #        —— 险资持有大量权益, 市场跌它自己也跌, 放进来会稀释信号)
+    #   红利ETF 510880(胜率仅50% —— 上证红利指数混入钢铁/地产等周期股, 大跌时跟跌)
+    #   中国移动(56%, 明显弱于中国电信67%)
+    ("601939", "建设银行", "红利/防御"),   # 胜率83% 大跌日+1.19%
+    ("601288", "农业银行", "红利/防御"),   # 胜率78% 大跌日+1.52%
+    ("601088", "中国神华", "红利/防御"),   # 煤炭 72% +1.10%
+    ("600900", "长江电力", "红利/防御"),   # 电力 72% +0.73%
+    ("601919", "中远海控", "红利/防御"),   # 运输 67% +0.54%
+    ("601728", "中国电信", "红利/防御"),   # 运营商 67% +0.71%
+    ("601857", "中国石油", "红利/防御"),   # 石油 61% +1.01%
+]
+
+# 风向标标的: 计入赛道统计与避险信号, 但排除出"当前强势"(它们不是可切入方向)
+DEFENSIVE = {"601939", "601288", "601088", "600900", "601919", "601728", "601857"}
+
+# 重点监视对象: 持仓/待买核心票, 跌幅达阈值立即告警
+FOCUS = {"600183", "600176", "300476", "002916", "603986",
+         "000657", "688256", "600206", "002384", "301217",
+         "300394", "300502"}
+
+# 告警阈值(当日涨跌幅, 单位%)
+ALERT_WARN = -3.0        # 警戒
+ALERT_DANGER = -5.0      # 严重
+# 冲高回落: 从日内高点回撤幅度(%)。7/31 中船特气从+9%砸到-14%, 当日跌幅告警在前半段
+# 完全不响, 但回撤告警在-5%时就会触发, 故单列一类。
+ALERT_DRAWDOWN = -5.0
+
 _lock = threading.Lock()          # 串行执行预测, 避免并发打爆数据源
 _cache = {}                        # (code,date,cutoff) -> result, 仅缓存回测
 _rescache = {}                     # (date,cutoff) -> 共振结果, 仅缓存回测
 _contcache = {}                    # (code,date,cutoff) -> 延续分析, 仅缓存回测
 _contgroupcache = {}               # (date,cutoff) -> 四股延续分析, 仅缓存回测
 _topcache = {}                     # (code,date,cutoff) -> 压力位/顶部预估, 仅缓存回测
+
+_wl_lock = threading.Lock()        # 守护下面两个换赛道雷达的内存态(与_lock分离, 不受重预测阻塞)
+_wl_history = {}                   # code -> [(ts, pct), ...] 近20分钟滚动样本, 用于算涨速变化
+_wl_trend_cache = {}               # code -> (ts, trend_dict) 日线趋势判断, 10分钟缓存(日线口径变化慢)
+_wl_day = {}                       # code -> 当日累计状态(资金峰值/首个VWAP/破线计数), 跨日自动重置
+_WL_HIST_WINDOW = 1200             # 滚动样本保留窗口(秒)
+_WL_TREND_TTL = 600                # 趋势快照缓存有效期(秒)
 
 
 def _index_pcts(date):
@@ -181,6 +242,480 @@ def continuation_group_run(date, cutoff):
             "resonance_score": resonance["score"],
             "resonance_band": resonance["band"], "items": items}
 
+
+# ───────────────────────── 换赛道雷达 ─────────────────────────
+# 实时监控池强度: 主升浪判定 / 主力资金流向 / 当前涨幅 / 涨幅变化速度 -> 10分制综合评分
+# 数据口径: 腾讯实时行情(单请求, 覆盖全池, 价格/涨幅主数据源, 稳定可达) +
+#          东财批量资金流(单请求, 可选增强; 东财对非浏览器客户端有TLS指纹风控, 偶发连接被拒,
+#          失败时静默降级为"资金数据缺", 不影响价格/趋势/涨速正常展示) +
+#          腾讯日K(10分钟缓存判趋势) + 服务端内存滚动样本(自算涨速, 不依赖额外接口)。
+#          全部为轻量数据源, 与预测器的分笔重构完全分离, 不占用 _lock, 30秒轮询不会拖慢/
+#          被拖慢主预测功能。
+
+def _em_batch_quote(codes):
+    """东财批量资金流(单请求覆盖全池, 尽力而为)。返回 {code: {...}}，任一字段缺失记为None。
+    仅用作主力资金增强信号；价格/涨幅一律以 tencent_realtime 为准(见 watchlist_run)。"""
+    secids = ",".join(f"{1 if c.startswith(('6', '9')) else 0}.{c}" for c in codes)
+    r = S.get("https://push2.eastmoney.com/api/qt/ulist.np/get", params={
+        "fltt": "2",
+        "fields": "f12,f13,f14,f2,f3,f8,f9,f23,f20,f62,f184,f66",
+        "secids": secids,
+    }, headers={"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}, timeout=8)
+    out = {}
+    for row in (r.json().get("data") or {}).get("diff") or []:
+        code = row.get("f12")
+        if not code:
+            continue
+
+        def g(k):
+            v = row.get(k)
+            return None if v in (None, "-") else v
+
+        mcap = g("f20")
+        main_net = g("f62")
+        super_net = g("f66")
+        out[code] = {
+            "name": g("f14"), "price": g("f2"), "pct": g("f3"), "turnover": g("f8"),
+            "pe": g("f9"), "pb": g("f23"),
+            "mcap_yi": round(mcap / 1e8, 1) if mcap is not None else None,
+            "main_net_yi": round(main_net / 1e8, 2) if main_net is not None else None,
+            "super_net_yi": round(super_net / 1e8, 2) if super_net is not None else None,
+            "main_pct": g("f184"),
+        }
+    return out
+
+
+_TREND_NA = {"above_ma20": None, "above_ma60": None, "ma20_rising": None,
+             "ret20_pct": None, "ret5_pct": None, "ext_from_high20_pct": None}
+
+
+def _trend_features(cl):
+    """从前复权收盘价序列(升序, 末位=评估日)算日线趋势特征。
+    纯函数, 无IO无缓存 —— 回测通过传入历史切片复用同一套口径, 避免与线上实现漂移。"""
+    if len(cl) < 25:
+        return dict(_TREND_NA)
+    price = cl[-1]
+    ma20 = sum(cl[-20:]) / 20
+    ma20_5ago = sum(cl[-25:-5]) / 20
+    ma60 = sum(cl[-60:]) / 60 if len(cl) >= 60 else None
+    ret20 = price / cl[-21] - 1 if len(cl) >= 21 else None
+    ret5 = price / cl[-6] - 1 if len(cl) >= 6 else None
+    ext20 = price / max(cl[-20:]) - 1
+    return {
+        "above_ma20": bool(price > ma20),
+        "above_ma60": bool(ma60 is None or ma20 > ma60),
+        "ma20_rising": bool(ma20 > ma20_5ago),
+        "ret20_pct": round(ret20 * 100, 1) if ret20 is not None else None,
+        "ret5_pct": round(ret5 * 100, 1) if ret5 is not None else None,
+        "ext_from_high20_pct": round(ext20 * 100, 1),
+    }
+
+
+def _trend_snapshot(code):
+    """_trend_features 的实时取数封装, 10分钟缓存(日线变化慢, 无需每次拉取)。
+    注意: 日K在盘中通常滞后一个交易日(今日走势要靠 watchlist_run 传入的实时涨幅补),
+    这里只反映"截至上一交易日收盘"的位置。"""
+    now = time.time()
+    cached = _wl_trend_cache.get(code)
+    if cached and now - cached[0] < _WL_TREND_TTL:
+        return cached[1]
+    try:
+        bars = tencent_kline(code, n=70, fq="qfq")  # [(date, close)]
+        result = _trend_features([c for _, c in bars])
+    except Exception:
+        result = dict(_TREND_NA)
+    with _wl_lock:
+        _wl_trend_cache[code] = (now, result)
+    return result
+
+
+def _classify_wave(trend, pct):
+    """结合日线特征 + 今日实时涨幅, 判定主升浪。
+    两条独立通路(任一满足即算主升浪):
+      ① 建制型上升趋势: 站稳MA20/60, MA20已上行, 20日涨幅>12% — 适合慢牛/已确立的趋势
+      ② V型暴力反弹: 5日涨幅>20%且今日仍在涨(>3%), 站稳MA20 — 不要求MA20已转向。
+         股灾后大反攻期间MA20仍被崩盘那几天的低值拖累下行，若死守①会系统性错杀正在
+         反攻的龙头(20日均线滞后于V型底几乎是必然, 不是①的判定失灵)。
+    """
+    above20, rising = trend.get("above_ma20"), trend.get("ma20_rising")
+    if above20 is None:
+        return "数据不足", False
+    above60 = trend.get("above_ma60")
+    ret20, ret5 = trend.get("ret20_pct"), trend.get("ret5_pct")
+    established = bool(above20 and above60 and rising and ret20 is not None and ret20 > 12)
+    breakout = bool(above20 and ret5 is not None and ret5 > 20 and pct is not None and pct > 3)
+    if established or breakout:
+        return "主升浪", True
+    if above20 and rising:
+        return "上升趋势", False
+    if above20:
+        return "弱势反弹", False
+    return "调整/破位", False
+
+
+def _momentum(code, pct):
+    """近5/15分钟涨速变化: 服务端维护滚动样本自算, 不依赖额外接口。"""
+    now = time.time()
+    with _wl_lock:
+        hist = _wl_history.setdefault(code, [])
+        if pct is not None:
+            hist.append((now, pct))
+        cutoff = now - _WL_HIST_WINDOW
+        while hist and hist[0][0] < cutoff:
+            hist.pop(0)
+        snap = list(hist)
+
+    def delta(seconds):
+        if pct is None:
+            return None
+        target = now - seconds
+        cand = [p for t, p in snap if t <= target]
+        return round(pct - cand[-1], 2) if cand else None
+
+    d5, d15 = delta(300), delta(900)
+    if pct is None:
+        speed_label = "行情数据缺"
+    elif d5 is None:
+        speed_label = "首次采样"
+    elif d5 >= 1.0:
+        speed_label = "加速上涨"
+    elif d5 >= 0.2:
+        speed_label = "温和走强"
+    elif d5 > -0.2:
+        speed_label = "走平"
+    elif d5 > -1.0:
+        speed_label = "转弱"
+    else:
+        speed_label = "加速下跌"
+    return {"chg_5m": d5, "chg_15m": d15, "speed_label": speed_label}
+
+
+def _score_stock(pct, trend, mom, main_pct):
+    """透明打分(条件+分值, 与共振评分同一套设计语言), 满分10分。"""
+    conds = []
+
+    def add(name, pts, met):
+        conds.append({"name": name, "pts": pts, "met": bool(met)})
+
+    # 趋势档位互斥计分: 直接取 _classify_wave 的最终档位, 避免V型反弹股(MA20尚未转向)
+    # 同时命中"主升浪"与"弱势反弹"而重复加分。
+    label = trend.get("label")
+    add("主升浪(建制上升趋势 或 V型暴力反弹)", 3.5, label == "主升浪")
+    add("上升趋势(站稳MA20且MA20上行, 未到主升浪强度)", 2.0, label == "上升趋势")
+    add("弱势反弹(站稳MA20但MA20走平/下行)", 0.8, label == "弱势反弹")
+
+    mp = main_pct
+    add("主力净占比≥5%(大资金明显流入)", 3.0, mp is not None and mp >= 5)
+    add("主力净占比1~5%(资金温和流入)", 1.6, mp is not None and 1 <= mp < 5)
+    add("主力净占比<-1%(资金明显流出)", -1.5, mp is not None and mp < -1)
+
+    add("今日涨幅≥7%", 2.0, pct is not None and pct >= 7)
+    add("今日涨幅3~7%", 1.3, pct is not None and 3 <= pct < 7)
+    add("今日涨幅0~3%", 0.6, pct is not None and 0 <= pct < 3)
+    add("今日下跌", -1.2, pct is not None and pct < 0)
+
+    d5 = mom.get("chg_5m")
+    add("涨速加速(近5分钟再涨≥1%)", 1.5, d5 is not None and d5 >= 1.0)
+    add("涨速走强(近5分钟+0.2~1%)", 0.8, d5 is not None and 0.2 <= d5 < 1.0)
+    add("涨速转弱(近5分钟-1~-0.2%)", -1.0, d5 is not None and -1.0 < d5 <= -0.2)
+    add("涨速加速下跌(近5分钟≤-1%)", -1.8, d5 is not None and d5 <= -1.0)
+
+    raw = sum(c["pts"] for c in conds if c["met"])
+    return max(0.0, min(10.0, round(raw, 1))), conds
+
+
+def _shape_state(code, q, main_pct, now_hm):
+    """日内形态判别 -> 【突破冲高成功】/【继续强势】/【危险：回落走弱】
+
+    依据来自两个真实案例的对照(中际旭创2026-08-04 全项成立 vs 寒武纪2026-08-13 全项失败):
+      ① 现价在当日振幅的分位 ≥70%      (收在高位=买盘主导)
+      ② 站上分时均价线 且 未持续破线    (破线后30分钟收不回=派发确认)
+      ③ 分时均价线较当日首次观测抬升
+      ④ 主力资金占比未从峰值大幅衰减    (看衰减速度, 不看绝对值)
+      ⑤ 距日内高点回撤 <3%
+
+    重要局限(已在返回值中标注):
+      - 开盘30分钟内 VWAP≈现价, 各项不稳定 -> 09:45 前返回"观察中"
+      - ④依赖服务端当日累计的资金峰值; 若服务是盘中才启动, 峰值不可靠 -> 标注数据不全
+    """
+    px, hi, lo, vwap = q.get("price"), q.get("high"), q.get("low"), q.get("vwap")
+    if not (px and hi and lo and vwap):
+        return {"state": "数据不足", "n": None, "conds": [], "partial": True}
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    with _wl_lock:
+        d = _wl_day.get(code)
+        # 缺任一键都视为需要重建(跨日重置, 也防御被部分写入的脏状态)
+        if (not d or d.get("date") != today
+                or not {"peak_main", "vwap_first", "below_since", "first_seen"} <= d.keys()):
+            d = {"date": today, "peak_main": None, "vwap_first": vwap,
+                 "below_since": None, "first_seen": now_hm}
+            _wl_day[code] = d
+        if main_pct is not None:
+            d["peak_main"] = main_pct if d["peak_main"] is None else max(d["peak_main"], main_pct)
+        if px < vwap:
+            if d["below_since"] is None:
+                d["below_since"] = now_hm
+        else:
+            d["below_since"] = None
+        snap = dict(d)
+
+    if now_hm < "09:45":
+        return {"state": "观察中", "n": None, "conds": [],
+                "note": "开盘30分钟内均价线未成形", "partial": True}
+
+    amp = hi - lo
+    pos = ((px - lo) / amp * 100) if amp > 0 else 50.0
+    dvw = (px / vwap - 1) * 100
+    dhi = (px / hi - 1) * 100
+    peak = snap["peak_main"]
+    decay_ok = (main_pct is not None and peak is not None
+                and main_pct > 0 and main_pct >= peak * 0.6)
+    # 破线持续时长(分钟)
+    below_min = None
+    if snap["below_since"]:
+        a = int(snap["below_since"][:2]) * 60 + int(snap["below_since"][3:])
+        b = int(now_hm[:2]) * 60 + int(now_hm[3:])
+        below_min = max(0, b - a)
+
+    vw_txt = (f"未持续跌破分时均价线({dvw:+.2f}%"
+              + (f", 已破线{below_min}分钟)" if below_min else ")"))
+    conds = [
+        {"name": f"现价处当日振幅{pos:.0f}%分位(≥70%强)", "met": pos >= 70},
+        {"name": vw_txt, "met": dvw >= 0 or (below_min is not None and below_min < 30)},
+        {"name": "分时均价线较开盘抬升", "met": vwap > snap["vwap_first"]},
+        {"name": (f"主力占比{main_pct:+.1f}%未从峰值{peak:+.1f}%大幅衰减"
+                  if (main_pct is not None and peak is not None) else "主力资金数据缺"),
+         "met": decay_ok},
+        {"name": f"距日内高点{dhi:+.2f}%(>-3%)", "met": dhi > -3},
+    ]
+    n = sum(1 for c in conds if c["met"])
+
+    # 有没有发生过"冲高": 日内最高涨幅 ≥4%
+    lc = q.get("last_close")
+    surge = bool(lc and (hi / lc - 1) * 100 >= 4.0)
+
+    if n >= 4:
+        state = "突破冲高成功" if surge else "继续强势"
+    elif n <= 2:
+        state = "危险：回落走弱"
+    else:
+        halved = (main_pct is not None and peak is not None and peak > 0
+                  and main_pct < peak * 0.5)
+        state = "危险：回落走弱" if halved else "多空拉锯"
+
+    # 分时均价线的一票否决权:
+    # 它不是普通的1/5票 —— 均价线是当日全部买盘的平均成本, 跌破意味着当日买入者
+    # 整体浮亏, 抛压会自我强化。两个对照案例的分水岭正在这里(旭创全天未破 /
+    # 寒武纪10:00破后再没收回)。所以按破线时长做封顶降级, 而不是让其余4项把它稀释掉。
+    if dvw < 0:
+        if below_min is not None and below_min >= 60:
+            state = "危险：回落走弱"
+        elif below_min is not None and below_min >= 30:
+            if state in ("突破冲高成功", "继续强势"):
+                state = "多空拉锯"
+        elif state == "突破冲高成功":
+            state = "继续强势"     # 现价在均价线下方, 不能叫"突破成功"
+
+    partial = (main_pct is None or peak is None or snap["first_seen"] > "10:00")
+    return {"state": state, "n": n, "conds": conds, "pos": round(pos, 0),
+            "dvw": round(dvw, 2), "dhi": round(dhi, 2), "surge": surge,
+            "peak_main": peak, "below_min": below_min, "partial": partial,
+            "note": ("资金峰值不完整(服务启动较晚)" if snap["first_seen"] > "10:00" else "")}
+
+
+def _alert_of(pct, drawdown):
+    """告警判定。返回 (level, reason) —— level: ''|'warn'|'danger'。
+    两类独立触发, 取更严重的一个:
+      当日跌幅   pct <= -3% 警戒, <= -5% 严重
+      冲高回落   自日内高点回撤 <= -5% (即便当日仍为正也告警)
+    """
+    hits = []
+    if pct is not None:
+        if pct <= ALERT_DANGER:
+            hits.append(("danger", f"当日跌{abs(pct):.1f}%"))
+        elif pct <= ALERT_WARN:
+            hits.append(("warn", f"当日跌{abs(pct):.1f}%"))
+    if drawdown is not None and drawdown <= ALERT_DRAWDOWN:
+        lvl = "danger" if drawdown <= 2 * ALERT_DRAWDOWN else "warn"
+        hits.append((lvl, f"自高点回撤{abs(drawdown):.1f}%"))
+    if not hits:
+        return "", ""
+    if any(h[0] == "danger" for h in hits):
+        return "danger", " · ".join(h[1] for h in hits)
+    return "warn", " · ".join(h[1] for h in hits)
+
+
+def _is_strong(score, label, pct, main_pct):
+    """强势判定(驱动"醒目列出")。
+    刻意不只卡总分线: 东财资金流经常拿不到(TLS指纹风控), 缺失时总分会被系统性压低最多3分,
+    单卡分数线会在"资金数据可用/不可用"两种状态下表现不一致, 对换赛道决策是误导。
+    所以用"实质条件 + 分数线"双重口径, 缺资金数据时仍能正确识别强势:
+      必要条件: 趋势在上升通道(主升浪/上升趋势) 且 今日在涨
+      再满足其一: 主升浪 / 分数≥6 / 资金明确流入(≥1%)
+    """
+    if label not in ("主升浪", "上升趋势"):
+        return False
+    if pct is None or pct <= 0:
+        return False
+    return bool(label == "主升浪" or score >= 6.0
+                or (main_pct is not None and main_pct >= 1))
+
+
+def watchlist_run():
+    """换赛道雷达: 观察池全量实时强度快照, 按综合评分降序 + 按赛道聚合。"""
+    codes = [c for c, _, _ in WATCHLIST]
+    try:
+        rt = tencent_realtime(codes)  # 价格/涨幅主数据源, 稳定可达
+    except Exception:
+        rt = {}
+    try:
+        flows = _em_batch_quote(codes)  # 主力资金增强信号, 尽力而为
+    except Exception:
+        flows = {}  # 东财偶发拒连时, 价格/趋势/涨速仍正常展示, 仅资金标签显示"数据缺"
+
+    trends = {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futs = {ex.submit(_trend_snapshot, c): c for c in codes}
+        for fut in futs:
+            code = futs[fut]
+            try:
+                trends[code] = fut.result()
+            except Exception:
+                trends[code] = {"above_ma20": None, "above_ma60": None, "ma20_rising": None,
+                                 "ret20_pct": None, "ret5_pct": None, "ext_from_high20_pct": None}
+
+    now_hm = datetime.now().strftime("%H:%M")
+    items = []
+    for code, name, branch in WATCHLIST:
+        q = rt.get(code) or {}
+        f = flows.get(code) or {}
+        pct = q.get("pct")
+        main_pct = f.get("main_pct")
+        mom = _momentum(code, pct)
+        trend = trends.get(code) or {}
+        label, is_main_wave = _classify_wave(trend, pct)
+        trend = dict(trend, label=label, is_main_wave=is_main_wave)
+        score, conds = _score_stock(pct, trend, mom, main_pct)
+        if main_pct is None:
+            flow_label = "资金数据缺"
+        elif main_pct >= 5:
+            flow_label = "大幅流入"
+        elif main_pct >= 1:
+            flow_label = "温和流入"
+        elif main_pct > -1:
+            flow_label = "持平"
+        else:
+            flow_label = "流出"
+
+        # 冲高回落: 现价相对日内最高价的回撤(告警只对重点监视对象生效)
+        hi = q.get("high")
+        px = q.get("price")
+        drawdown = round((px / hi - 1) * 100, 2) if (hi and px) else None
+        shape = _shape_state(code, q, main_pct, now_hm)
+        if code in FOCUS:
+            alert, alert_reason = _alert_of(pct, drawdown)
+            # 形态判定为走弱时也升级告警: 它比"当日跌3%"更早(寒武纪10:00破线时
+            # 还涨着+3.58%, 当日跌幅告警要到收盘才响)
+            if shape["state"].startswith("危险"):
+                if not alert:
+                    alert, alert_reason = "warn", "形态转弱(破均价线/资金衰减)"
+                elif alert == "warn":
+                    alert = "danger"
+                    alert_reason += " · 形态转弱"
+        else:
+            alert, alert_reason = "", ""
+
+        items.append({
+            "code": code, "name": q.get("name") or name, "branch": branch,
+            "price": q.get("price"), "pct": pct, "turnover": q.get("turnover"),
+            "mcap_yi": f.get("mcap_yi"),
+            "main_net_yi": f.get("main_net_yi"), "main_pct": main_pct,
+            "flow_label": flow_label,
+            "main_inflow": bool(main_pct is not None and main_pct > 0),
+            "trend_label": trend.get("label", "数据不足"),
+            "is_main_wave": bool(trend.get("is_main_wave")),
+            "ret20_pct": trend.get("ret20_pct"),
+            "ext_from_high20_pct": trend.get("ext_from_high20_pct"),
+            "chg_5m": mom.get("chg_5m"), "chg_15m": mom.get("chg_15m"),
+            "speed_label": mom.get("speed_label"),
+            "score": score, "conds": conds,
+            "is_strong": (code not in DEFENSIVE
+                          and _is_strong(score, trend.get("label"), pct, main_pct)),
+            "is_defensive": code in DEFENSIVE,
+            "is_focus": code in FOCUS,
+            "high": q.get("high"), "drawdown": drawdown,
+            "vwap": q.get("vwap"),
+            "shape": shape["state"], "shape_n": shape.get("n"),
+            "shape_conds": shape.get("conds", []),
+            "shape_partial": shape.get("partial", False),
+            "shape_note": shape.get("note", ""),
+            "alert": alert, "alert_reason": alert_reason,
+        })
+    items.sort(key=lambda x: -x["score"])
+
+    sectors = OrderedDict()
+    for it in items:
+        sectors.setdefault(it["branch"], []).append(it)
+    sector_list = []
+    for branch, arr in sectors.items():
+        n = len(arr)
+        avg_score = round(sum(x["score"] for x in arr) / n, 2)
+        pct_vals = [x["pct"] for x in arr if x["pct"] is not None]
+        avg_pct = round(sum(pct_vals) / len(pct_vals), 2) if pct_vals else None
+        inflow_n = sum(1 for x in arr if x["main_inflow"])
+        strong_n = sum(1 for x in arr if x["is_strong"])
+        sector_list.append({"branch": branch, "n": n, "avg_score": avg_score,
+                             "avg_pct": avg_pct, "inflow_n": inflow_n,
+                             "strong_n": strong_n})
+    # 换赛道优先看"强势家数占比", 其次看均分: 一条赛道整体在动比个别票冲高更值得切入
+    sector_list.sort(key=lambda x: (-(x["strong_n"] / x["n"]), -x["avg_score"]))
+
+    # ── 避险信号 ──
+    # 红利/防御 在涨 而 成长在跌 = 资金撤离风险资产, 是"有重大利空"的经典特征。
+    # 只看红利自己涨跌没用(它波动小), 关键是与成长的剪刀差 + 是否有真金白银流入。
+    dfs = [x for x in items if x["is_defensive"] and x["pct"] is not None]
+    grw = [x for x in items if not x["is_defensive"] and x["pct"] is not None]
+    risk = None
+    if dfs and grw:
+        d_pct = sum(x["pct"] for x in dfs) / len(dfs)
+        g_pct = sum(x["pct"] for x in grw) / len(grw)
+        spread = d_pct - g_pct
+        d_in = sum(1 for x in dfs if x["main_inflow"])
+        d_flow = [x["main_pct"] for x in dfs if x["main_pct"] is not None]
+        d_flow_avg = (sum(d_flow) / len(d_flow)) if d_flow else None
+        if d_pct > 0 and g_pct < 0 and spread >= 2.0:
+            lvl, txt = "danger", "资金明显撤向防御，警惕重大利空"
+        elif d_pct > 0 and g_pct < 0:
+            lvl, txt = "warn", "资金转向防御，成长承压"
+        elif spread >= 2.0:
+            lvl, txt = "warn", "红利显著跑赢成长，风险偏好下降"
+        elif g_pct > 0 and d_pct < g_pct:
+            lvl, txt = "", "风险偏好正常，资金在成长端"
+        else:
+            lvl, txt = "", "无明显避险迹象"
+        risk = {"level": lvl, "text": txt,
+                "def_pct": round(d_pct, 2), "grow_pct": round(g_pct, 2),
+                "spread": round(spread, 2),
+                "def_inflow_n": d_in, "def_n": len(dfs),
+                "def_flow_avg": round(d_flow_avg, 1) if d_flow_avg is not None else None}
+
+    strong = [it for it in items if it["is_strong"]]
+    focus = [it for it in items if it["is_focus"]]
+    focus.sort(key=lambda x: (x["pct"] if x["pct"] is not None else 0))
+    alerts = [it for it in focus if it["alert"]]
+    alerts.sort(key=lambda x: (x["alert"] != "danger",
+                                x["pct"] if x["pct"] is not None else 0))
+    return {"time": datetime.now().strftime("%H:%M:%S"),
+            "items": items, "sectors": sector_list,
+            "strong": strong, "strong_n": len(strong), "total_n": len(items),
+            "focus": focus, "focus_n": len(focus),
+            "risk": risk,
+            "alerts": alerts, "alert_n": len(alerts),
+            "danger_n": sum(1 for a in alerts if a["alert"] == "danger"),
+            "flow_ok": bool(flows)}
+
+
 PAGE = """<!DOCTYPE html>
 <html lang="zh"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -289,11 +824,126 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
 .book { width:100%; border-collapse:collapse; font-size:.7rem; margin-top:.3rem; }
 .book th,.book td { border-bottom:1px solid var(--line); padding:.18rem .35rem; text-align:right; }
 .book th:first-child,.book td:first-child { text-align:left; }
+.layout { display:flex; gap:1rem; align-items:flex-start; }
+.mainCol { flex:1; min-width:0; }
+.wlCol { width:360px; flex:0 0 360px; position:sticky; top:.8rem;
+  max-height:calc(100vh - 1.6rem); overflow:auto; }
+@media (max-width:960px) { .layout{flex-direction:column;} .wlCol{width:100%;flex:0 0 auto;
+  position:static; max-height:none;} }
+.wlpanel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:.8rem; }
+.wlhead { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:.5rem; gap:.5rem; }
+.wlhead h2 { font-size:1rem; margin:0; }
+.wlhead button { padding:.2rem .6rem; font-size:.75rem; }
+.wlsectors { display:flex; flex-direction:column; gap:.28rem; margin-bottom:.7rem;
+  border-bottom:1px dashed var(--line); padding-bottom:.6rem; }
+.wlsecthead { display:flex; justify-content:space-between; align-items:baseline;
+  cursor:pointer; user-select:none; font-size:.72rem; color:var(--muted);
+  padding:.1rem .1rem .25rem; }
+.wlsecthead:hover { color:var(--accent); }
+.wlsecthead b { color:var(--ink); font-size:.78rem; }
+.wlsecthead .chev { font-size:.68rem; white-space:nowrap; }
+.wlsector { display:flex; align-items:baseline; gap:.4rem; font-size:.74rem; }
+.wlsector-name { flex:0 0 68px; color:var(--muted); }
+.wlsector-score { font-weight:800; font-size:1.05rem; font-variant-numeric:tabular-nums; width:2.6rem; }
+.wlsector-meta { color:var(--muted); }
+.wlrisk { border-radius:8px; padding:.5rem .6rem; margin-bottom:.7rem; font-size:.78rem;
+  border:1px solid var(--line); background:var(--bg); }
+.wlrisk.warn { border:2px solid #B8860B; background:rgba(184,134,11,.10); }
+.wlrisk.danger { border:2px solid var(--up); background:rgba(194,64,47,.12);
+  animation:wlpulse 1.8s ease-out infinite; }
+.wlrisk .hd { font-weight:800; display:flex; justify-content:space-between;
+  align-items:baseline; gap:.5rem; }
+.wlrisk.danger .hd { color:var(--up); }
+.wlrisk.warn .hd { color:#8a6508; }
+.wlrisk .nums { color:var(--muted); font-size:.72rem; margin-top:.25rem;
+  font-variant-numeric:tabular-nums; }
+.wlrisk .nums b { color:var(--ink); }
+@keyframes wlpulse { 0%,100%{box-shadow:0 0 0 0 rgba(194,64,47,.55);} 50%{box-shadow:0 0 0 7px rgba(194,64,47,0);} }
+.wlalertbox { border:2px solid var(--up); background:rgba(194,64,47,.10); border-radius:8px;
+  padding:.55rem .6rem; margin-bottom:.7rem; animation:wlpulse 1.8s ease-out infinite; }
+.wlalertbox.warnonly { border-color:#B8860B; background:rgba(184,134,11,.10); animation:none; }
+.wlalerttitle { font-size:.9rem; font-weight:800; color:var(--up); margin-bottom:.4rem;
+  display:flex; justify-content:space-between; align-items:baseline; }
+.wlalertbox.warnonly .wlalerttitle { color:#8a6508; }
+.wlalerttitle small { font-weight:400; font-size:.68rem; color:var(--muted); }
+.wlalertrow { display:flex; align-items:center; gap:.5rem; padding:.35rem .5rem;
+  background:var(--panel); border-radius:5px; margin-bottom:.3rem;
+  border-left:4px solid var(--up); }
+.wlalertrow.warn { border-left-color:#B8860B; }
+.wlalertrow:last-child { margin-bottom:0; }
+.wlalertname { font-weight:700; font-size:.86rem; flex:1; min-width:0; }
+.wlalertpct { font-variant-numeric:tabular-nums; font-weight:800; font-size:1.1rem; }
+.wlalertwhy { font-size:.68rem; color:var(--muted); }
+.wlfocusbox { border:1px solid var(--line); border-radius:8px; padding:.5rem .6rem;
+  margin-bottom:.7rem; background:var(--bg); }
+.wlfocustitle { font-size:.8rem; font-weight:700; margin-bottom:.35rem; color:var(--accent);
+  display:flex; justify-content:space-between; align-items:baseline; }
+.wlfocustitle small { font-weight:400; font-size:.68rem; color:var(--muted); }
+.wlfocusrow { display:flex; align-items:center; gap:.4rem; font-size:.76rem;
+  padding:.16rem 0; border-bottom:1px dotted var(--line); }
+.wlfocusrow:last-child { border-bottom:none; }
+.wlfocusrow .nm { flex:1; min-width:0; }
+.wlfocusrow .pc { font-variant-numeric:tabular-nums; font-weight:700; width:4.2rem; text-align:right; }
+.wlfocusrow .dd { font-variant-numeric:tabular-nums; width:4.6rem; text-align:right; color:var(--muted); font-size:.7rem; }
+.shape { display:inline-block; font-size:.68rem; padding:.06rem .4rem; border-radius:3px;
+  font-weight:700; color:#fff; margin-left:.25rem; }
+.shape.s-break { background:var(--up); }
+.shape.s-strong { background:#1E7F5C; }
+.shape.s-mix { background:#B8860B; }
+.shape.s-weak { background:#7A2E22; }
+.shape.s-wait { background:var(--flat); font-weight:400; }
+.shape.partial { opacity:.72; }
+.wlrow.focus { background:#fff; }
+.wlrow.alertwarn { border-color:#B8860B; box-shadow:inset 3px 0 0 #B8860B; }
+.wlrow.alertdanger { border-color:var(--up); box-shadow:inset 3px 0 0 var(--up); }
+.focustag { display:inline-block; font-size:.62rem; padding:0 .3rem; border-radius:2px;
+  background:var(--accent); color:#fff; vertical-align:middle; margin-left:.25rem; }
+.wlstrongbox { border:2px solid var(--up); border-radius:8px; padding:.55rem .6rem .6rem;
+  margin-bottom:.7rem; background:rgba(194,64,47,.05); }
+.wlstrongbox.empty { border-color:var(--line); background:var(--bg); }
+.wlstrongtitle { font-size:.85rem; font-weight:800; color:var(--up); margin-bottom:.45rem;
+  display:flex; justify-content:space-between; align-items:baseline; }
+.wlstrongbox.empty .wlstrongtitle { color:var(--muted); font-weight:600; }
+.wlstrongtitle small { font-weight:400; font-size:.7rem; color:var(--muted); }
+.wlstrongrow { display:flex; align-items:center; gap:.5rem; padding:.4rem .5rem;
+  background:var(--panel); border:1px solid var(--line); border-radius:6px; margin-bottom:.35rem; }
+.wlstrongrow:last-child { margin-bottom:0; }
+.wlstrongscore { flex:0 0 3.1rem; font-size:2rem; font-weight:800; line-height:1;
+  font-variant-numeric:tabular-nums; text-align:center; color:var(--up); }
+.wlstrongmain { flex:1; min-width:0; }
+.wlstrongname { font-size:.95rem; font-weight:700; }
+.wlstrongname .wlbranch { font-size:.72rem; }
+.wlstrongmeta { font-size:.72rem; color:var(--muted); margin-top:.1rem; }
+.wlstrongpct { flex:0 0 auto; text-align:right; font-variant-numeric:tabular-nums; }
+.wlstrongpct b { display:block; font-size:1.05rem; }
+.wlstrongpct small { font-size:.68rem; color:var(--muted); }
+.wlrow.strong { border-color:var(--up); box-shadow:inset 3px 0 0 var(--up); }
+.wllist { display:flex; flex-direction:column; gap:.5rem; }
+.wllisthead { font-size:.72rem; color:var(--muted); margin:.2rem 0 .1rem; }
+.wlrow { display:flex; gap:.6rem; align-items:flex-start; background:var(--bg);
+  border:1px solid var(--line); border-radius:6px; padding:.5rem .6rem; }
+.wlscore { flex:0 0 2.7rem; font-size:1.7rem; font-weight:800; line-height:1.1;
+  font-variant-numeric:tabular-nums; text-align:center; border-radius:6px; padding:.35rem 0; color:#fff; }
+.wl-strong { background:var(--up); } .wl-mid { background:#B8860B; } .wl-weak { background:var(--dn); }
+.wlbody { flex:1; min-width:0; }
+.wlname { font-size:.86rem; font-weight:600; }
+.wlbranch { color:var(--muted); font-weight:400; font-size:.72rem; margin-left:.3rem; }
+.wltags { display:flex; flex-wrap:wrap; gap:.3rem; margin:.3rem 0; }
+.wltag { font-size:.68rem; padding:.1rem .4rem; border-radius:3px; background:var(--panel);
+  border:1px solid var(--line); color:var(--muted); }
+.wltag.wave { color:#fff; background:var(--up); border-color:var(--up); font-weight:700; }
+.wltag.flow { color:var(--up); border-color:var(--up); }
+.wltag.flowout { color:var(--dn); border-color:var(--dn); }
+.wlnums { display:flex; justify-content:space-between; font-size:.78rem; font-variant-numeric:tabular-nums; }
+.wlspeed { color:var(--muted); }
+.wldetails { margin-top:.3rem; } .wldetails summary { font-size:.7rem; color:var(--muted); cursor:pointer; }
+.wldetails .condlist { grid-template-columns:1fr; margin-top:.3rem; }
 </style></head><body>
 <h1>涨跌预测台 · 六股</h1>
 <p class="sub">特征: 主力净流入 / 特大单净流入 / 板块涨跌 / 自身涨跌 ·
 多通道: 通达信分笔(主) + 腾讯量能校验 + 东财官方对照 + 全同业板块二通道 ·
 高置信(≥60%)才给买卖建议, 否则观望 · 概率仅供研究, 非投资建议</p>
+<div class="layout"><div class="mainCol">
 <div class="bar">
   <label>模式</label>
   <select id="mode"><option value="live">实时(今天)</option>
@@ -321,6 +971,26 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
 <div id="topPanel"></div>
 <p class="note">首次跑某只股票需重构约40天分笔(1~3分钟), 之后有本地缓存(约10秒)。
 实时模式请在交易时段使用; 回测日期需为交易日。资金流为分笔重构口径, 与东财APP绝对值不可直接对照。</p>
+</div>
+<div class="wlCol">
+  <div class="wlpanel">
+    <div class="wlhead">
+      <h2>换赛道雷达</h2>
+      <span>
+        <button onclick="refreshWatchlist()">刷新</button>
+        <span class="status" id="wlStatus">加载中…</span>
+      </span>
+    </div>
+    <div id="wlRisk"></div>
+    <div id="wlAlerts"></div>
+    <div id="wlFocus"></div>
+    <div id="wlStrong"></div>
+    <div class="wlsectors" id="wlSectors"></div>
+    <div class="wllisthead" id="wlListHead"></div>
+    <div class="wllist" id="wlList"></div>
+  </div>
+</div>
+</div>
 <script>
 const $ = id => document.getElementById(id);
 $('mode').onchange = () => { const live = $('mode').value === 'live';
@@ -691,6 +1361,8 @@ function topCard(d) {
   let valid = '';
   if (it && it.validation) valid = ` · 走步验证${it.validation.n}天：P80覆盖率`+
     `${pct(it.validation.coverage80)}，P50中位误差${it.validation.median_err50}%`;
+  if (md && md.validation) valid += ` · 3日验证${md.validation.n}天：P80覆盖率`+
+    `${pct(md.validation.coverage80)}，P50中位误差${md.validation.median_err50}%`;
   let actual = '';
   if (it && it.actual) actual += `<div class="actual">回测实际：之后最高 <b>${it.actual.high.toFixed(2)}</b>`+
     `（${sgn(it.actual.pct,'%')}）于 ${it.actual.time} ${it.actual.hit_zone?'✓触及高抛区':'✗未及高抛区'}</div>`;
@@ -739,6 +1411,227 @@ async function runTop() {
   $('status').textContent = '完成';
   $('run').disabled = false; $('runRes').disabled = false; $('runCont').disabled = false; $('runTop').disabled = false;
 }
+
+// ───────────────────────── 换赛道雷达 ─────────────────────────
+function scoreCls(s) { return s >= 7 ? 'wl-strong' : (s >= 4 ? 'wl-mid' : 'wl-weak'); }
+const WL_SPEED_ICON = {'加速上涨':'⏫','温和走强':'↗','走平':'→','转弱':'↘','加速下跌':'⏬',
+  '首次采样':'…','行情数据缺':'?'};
+function wlSectorRow(s) {
+  const pctTxt = s.avg_pct === null || s.avg_pct === undefined ? '—' : sgn(s.avg_pct, '%');
+  // 红利/防御是风向标不是可切入方向, 不显示"强势N/N"(它永远是0, 显示出来是误导)
+  const strongTxt = s.branch === '红利/防御' ? '<b>风向标</b>'
+    : (s.strong_n > 0 ? `<b style="color:var(--up)">强势${s.strong_n}/${s.n}</b>`
+                      : `强势0/${s.n}`);
+  return `<div class="wlsector">
+    <span class="wlsector-name">${s.branch}</span>
+    <span class="wlsector-score" style="color:${s.avg_score>=7?'var(--up)':(s.avg_score>=4?'#B8860B':'var(--dn)')}">${s.avg_score.toFixed(1)}</span>
+    <span class="wlsector-meta">${strongTxt} · 均涨${pctTxt} · 资金流入${s.inflow_n}/${s.n}</span>
+  </div>`;
+}
+// 赛道列表折叠: 默认只显示最强的一个, 避免14条赛道把下面的强势榜/个股列表挤出视野。
+// 展开状态存 localStorage, 刷新和30秒轮询都不会重置。
+let _wlSecOpen = false;
+try { _wlSecOpen = localStorage.getItem('wlSecOpen') === '1'; } catch (_) {}
+let _wlLastData = null;
+function wlSectorsBox(d) {
+  const list = d.sectors || [];
+  if (!list.length) return '';
+  const top = list[0];
+  // 折叠态: 整个列表隐藏, 只留一行摘要(最强赛道名+分数+均涨), 不占版面
+  if (!_wlSecOpen) {
+    const pct = (top.avg_pct === null || top.avg_pct === undefined)
+      ? '' : ` ${sgn(top.avg_pct, '%')}`;
+    return `<div class="wlsecthead" onclick="toggleSectors()">
+      <span>最强赛道 <b>${top.branch}</b>
+        <span style="color:${top.avg_score>=7?'var(--up)':(top.avg_score>=4?'#B8860B':'var(--dn)')};font-weight:700">
+        ${top.avg_score.toFixed(1)}</span>${pct}</span>
+      <span class="chev">赛道 ${list.length} 条 ▼</span></div>`;
+  }
+  return `<div class="wlsecthead" onclick="toggleSectors()">
+      <span><b>赛道强弱</b></span>
+      <span class="chev">收起 ▲</span></div>` + list.map(wlSectorRow).join('');
+}
+function toggleSectors() {
+  _wlSecOpen = !_wlSecOpen;
+  try { localStorage.setItem('wlSecOpen', _wlSecOpen ? '1' : '0'); } catch (_) {}
+  if (_wlLastData) $('wlSectors').innerHTML = wlSectorsBox(_wlLastData);
+}
+function wlStrongRow(it) {
+  const pctTxt = it.pct===null||it.pct===undefined ? '—' : sgn(it.pct,'%');
+  const chg5 = (it.chg_5m===null||it.chg_5m===undefined) ? '' : ` ${sgn(it.chg_5m,'%')}`;
+  const flowTxt = it.main_pct!=null
+    ? `资金${sgn(it.main_pct,'%')}` : it.flow_label;
+  return `<div class="wlstrongrow">
+    <div class="wlstrongscore">${it.score.toFixed(1)}</div>
+    <div class="wlstrongmain">
+      <div class="wlstrongname">${it.name}<span class="wlbranch">${it.branch}</span></div>
+      <div class="wlstrongmeta">${it.is_main_wave?'⚡主升浪':it.trend_label} · ${flowTxt} ·
+        ${WL_SPEED_ICON[it.speed_label]||'·'}${it.speed_label}${chg5}</div>
+    </div>
+    <div class="wlstrongpct"><b class="${cls(it.pct)}">${pctTxt}</b>
+      <small>${it.price!=null?it.price.toFixed(2):'—'}</small></div>
+  </div>`;
+}
+function wlRiskBox(d) {
+  const r = d.risk;
+  if (!r) return '';
+  const icon = r.level === 'danger' ? '🔴' : (r.level === 'warn' ? '🟡' : '🟢');
+  const flow = (r.def_flow_avg === null || r.def_flow_avg === undefined)
+    ? '资金数据缺' : `红利主力均值 <b>${sgn(r.def_flow_avg,'%')}</b>`;
+  return `<div class="wlrisk ${r.level}">
+    <div class="hd"><span>${icon} ${r.text}</span>
+      <span style="font-weight:400;font-size:.68rem;color:var(--muted)">避险信号</span></div>
+    <div class="nums">红利 <b class="${cls(r.def_pct)}">${sgn(r.def_pct,'%')}</b> ·
+      成长 <b class="${cls(r.grow_pct)}">${sgn(r.grow_pct,'%')}</b> ·
+      剪刀差 <b class="${cls(r.spread)}">${sgn(r.spread,'%')}</b> ·
+      流入 <b>${r.def_inflow_n}/${r.def_n}</b> · ${flow}</div>
+  </div>`;
+}
+function wlAlertBox(d) {
+  if (!d.alerts || !d.alerts.length)
+    return `<div class="wlfocusbox"><div class="wlfocustitle">
+      <span>✅ 重点监视 · 无告警</span>
+      <small>阈值 跌3%警戒 / 跌5%严重 / 自高点回撤5%</small></div></div>`;
+  const onlyWarn = d.danger_n === 0;
+  const rows = d.alerts.map(it => `<div class="wlalertrow ${it.alert}">
+      <span class="wlalertname">${it.alert==='danger'?'🔴':'🟡'} ${it.name}
+        <span class="wlalertwhy">${it.alert_reason}</span></span>
+      <span class="wlalertpct ${cls(it.pct)}">${sgn(it.pct,'%')}</span>
+    </div>`).join('');
+  return `<div class="wlalertbox${onlyWarn?' warnonly':''}">
+    <div class="wlalerttitle">
+      <span>⚠️ 告警 ${d.alert_n} 只${d.danger_n?`（严重 ${d.danger_n}）`:''}</span>
+      <small>重点监视 ${d.focus_n} 只</small></div>
+    ${rows}</div>`;
+}
+function wlFocusBox(d) {
+  if (!d.focus || !d.focus.length) return '';
+  const rows = d.focus.map(it => {
+    const dd = (it.drawdown===null||it.drawdown===undefined) ? '' : `${it.drawdown.toFixed(1)}%`;
+    const mark = it.alert === 'danger' ? '🔴' : (it.alert === 'warn' ? '🟡' : '·');
+    return `<div class="wlfocusrow">
+      <span class="nm">${mark} ${it.name}${shapeTag(it)}</span>
+      <span class="dd" title="自日内高点回撤">${dd}</span>
+      <span class="pc ${cls(it.pct)}">${it.pct===null?'—':sgn(it.pct,'%')}</span>
+    </div>`;
+  }).join('');
+  return `<div class="wlfocusbox"><div class="wlfocustitle">
+    <span>🎯 重点监视 ${d.focus_n} 只</span><small>右列=自高点回撤 · 按涨幅升序</small>
+    </div>${rows}</div>`;
+}
+function wlStrongBox(d) {
+  const note = d.flow_ok ? '' : ' · 东财资金流暂不可达，已按趋势+涨速口径判定';
+  if (!d.strong || !d.strong.length) {
+    return `<div class="wlstrongbox empty"><div class="wlstrongtitle">
+      <span>当前无强势标的</span><small>${d.total_n}只在监视${note}</small></div>
+      <div class="wlstrongmeta" style="font-size:.74rem;color:var(--muted)">
+      判定：趋势处上升通道(主升浪/上升趋势) 且 今日上涨 且 (主升浪 / 评分≥6 / 资金流入≥1%)</div></div>`;
+  }
+  return `<div class="wlstrongbox"><div class="wlstrongtitle">
+    <span>🔥 当前强势 ${d.strong.length}/${d.total_n}</span>
+    <small>可切入方向${note}</small></div>
+    ${d.strong.map(wlStrongRow).join('')}</div>`;
+}
+const SHAPE_CLS = {'突破冲高成功':'s-break','继续强势':'s-strong','多空拉锯':'s-mix',
+  '危险：回落走弱':'s-weak','观察中':'s-wait','数据不足':'s-wait'};
+function shapeTag(it) {
+  if (!it.shape) return '';
+  const c = SHAPE_CLS[it.shape] || 's-wait';
+  const n = (it.shape_n === null || it.shape_n === undefined) ? '' : ` ${it.shape_n}/5`;
+  const t = it.shape_note ? ` title="${it.shape_note}"` : '';
+  return `<span class="shape ${c}${it.shape_partial?' partial':''}"${t}>${it.shape}${n}</span>`;
+}
+function wlRow(it) {
+  const waveTag = it.is_main_wave ? '<span class="wltag wave">⚡主升浪</span>' :
+    `<span class="wltag">${it.trend_label}</span>`;
+  const flowTag = it.main_inflow ?
+    `<span class="wltag flow">✓资金流入${it.main_pct!=null?' '+it.main_pct.toFixed(1)+'%':''}</span>` :
+    `<span class="wltag flowout">${it.flow_label}</span>`;
+  const chg5 = (it.chg_5m===null||it.chg_5m===undefined) ? '' : ` (5m ${sgn(it.chg_5m,'%')})`;
+  const pctTxt = it.pct===null||it.pct===undefined ? '—' : sgn(it.pct,'%');
+  const condHtml = (it.conds||[]).map(condRow).join('');
+  const rowCls = (it.is_strong?' strong':'') + (it.is_focus?' focus':'')
+    + (it.alert==='danger'?' alertdanger':(it.alert==='warn'?' alertwarn':''));
+  return `<div class="wlrow${rowCls}">
+    <div class="wlscore ${scoreCls(it.score)}">${it.score.toFixed(1)}</div>
+    <div class="wlbody">
+      <div class="wlname">${it.name}${it.is_focus?'<span class="focustag">重点</span>':''}<span class="wlbranch">${it.branch}</span></div>
+      <div class="wltags">${shapeTag(it)}${waveTag}${flowTag}</div>
+      <div class="wlnums">
+        <span class="${cls(it.pct)}">${pctTxt}</span>
+        <span class="wlspeed">${WL_SPEED_ICON[it.speed_label]||'·'} ${it.speed_label}${chg5}</span>
+      </div>
+      <details class="wldetails"><summary>评分依据</summary>
+        <div class="condlist">${condHtml}</div></details>
+    </div>
+  </div>`;
+}
+// 告警去重: 同一只票在同一告警级别下只提醒一次, 升级(warn->danger)会再提醒一次,
+// 避免30秒轮询把同一个告警反复弹出来。
+const _wlNotified = {};
+function notifyAlerts(d) {
+  const fresh = [];
+  for (const it of (d.alerts || [])) {
+    if (_wlNotified[it.code] !== it.alert) { fresh.push(it); _wlNotified[it.code] = it.alert; }
+  }
+  for (const code of Object.keys(_wlNotified)) {
+    if (!(d.alerts || []).some(a => a.code === code)) delete _wlNotified[code];  // 已恢复
+  }
+  if (!fresh.length) return;
+  const body = fresh.map(x => `${x.name} ${sgn(x.pct,'%')} (${x.alert_reason})`).join(String.fromCharCode(10));
+  try {
+    if (window.Notification && Notification.permission === 'granted')
+      new Notification(`⚠️ 重点监视告警 ${fresh.length} 只`, {body, tag: 'wl-alert'});
+  } catch (_) {}
+  try {  // 声音提示: WebAudio 蜂鸣, 不依赖外部音频文件(CSP/离线均可用)
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) {
+      const ctx = new Ctx(), o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = fresh.some(x => x.alert === 'danger') ? 880 : 620;
+      g.gain.setValueAtTime(0.09, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(); o.stop(ctx.currentTime + 0.45);
+    }
+  } catch (_) {}
+}
+let _wlTimer = null;
+async function refreshWatchlist() {
+  try {
+    const d = await apiJson('/api/watchlist', 45000, false);
+    $('wlStatus').textContent = `更新于 ${d.time}`;
+    _wlLastData = d;
+    $('wlRisk').innerHTML = wlRiskBox(d);
+    $('wlAlerts').innerHTML = wlAlertBox(d);
+    $('wlFocus').innerHTML = wlFocusBox(d);
+    // 标签页标题带告警数, 不切窗口也能看见
+    document.title = d.alert_n ? `🔴${d.alert_n} 涨跌预测台` : '涨跌预测台';
+    notifyAlerts(d);
+    $('wlStrong').innerHTML = wlStrongBox(d);
+    $('wlSectors').innerHTML = wlSectorsBox(d);
+    $('wlListHead').textContent = `全部 ${d.total_n} 只 · 按评分降序`;
+    $('wlList').innerHTML = d.items.map(wlRow).join('');
+  } catch (e) {
+    $('wlStatus').textContent = `刷新失败: ${e.message}`;
+  }
+}
+function wlStart() {
+  refreshWatchlist();
+  if (_wlTimer) clearInterval(_wlTimer);
+  _wlTimer = setInterval(refreshWatchlist, 30000);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (_wlTimer) clearInterval(_wlTimer); }
+  else wlStart();
+});
+// 浏览器通知与声音都需要用户手势后才允许, 首次点击页面时申请一次
+document.addEventListener('click', function _once() {
+  try { if (window.Notification && Notification.permission === 'default')
+    Notification.requestPermission(); } catch (_) {}
+  document.removeEventListener('click', _once);
+}, {once: true});
+wlStart();
 </script></body></html>"""
 
 PAGE = (PAGE
@@ -785,8 +1678,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(PAGE, "text/html; charset=utf-8")
             return
         if u.path not in ("/api/predict", "/api/resonance", "/api/continuation",
-                          "/api/continuation_group", "/api/top"):
+                          "/api/continuation_group", "/api/top", "/api/watchlist"):
             self._send('{"error":"not found"}', status=404)
+            return
+        if u.path == "/api/watchlist":
+            try:
+                self._send(json.dumps(watchlist_run(), ensure_ascii=False))
+            except Exception as e:
+                traceback.print_exc()
+                self._send_error(e)
             return
         q = parse_qs(u.query)
         date = (q.get("date") or [None])[0] or None

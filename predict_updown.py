@@ -96,7 +96,14 @@ def _tencent_kline_bars(code, n=90, fq="qfq"):
 # ───────────────────────── 基础工具 ─────────────────────────
 
 def prefix(code):
-    return "sh" if code.startswith(("6", "9")) else ("bj" if code.startswith("8") else "sz")
+    """交易所前缀。
+    6xx/9xx = 沪市股票/B股; 5xx = 沪市ETF/LOF(510880等, 旧版误判为深市导致取不到数据);
+    8xx/4xx = 北交所; 其余(0xx/3xx/1xx) = 深市。"""
+    if code.startswith(("6", "9", "5")):
+        return "sh"
+    if code.startswith(("8", "4")):
+        return "bj"
+    return "sz"
 
 def tdx_market(code):
     return 1 if prefix(code) == "sh" else 0
@@ -157,10 +164,33 @@ def tencent_realtime(codes):
             bid_vol, ask_vol = sum(x["volume"] for x in bids), sum(x["volume"] for x in asks)
             depth_imbalance = ((bid_vol - ask_vol) / (bid_vol + ask_vol) * 100
                                if bid_vol + ask_vol else None)
+            # 分时均价线 = 累计成交额 / 累计成交量。
+            # 坑: v[6]的单位不统一 —— 主板/创业板是「手」, 科创板(688)是「股」,
+            # 直接按手算会让科创板VWAP差100倍。这里不按板块硬编码(规则可能变),
+            # 而是两种单位都算, 取落在当日[最低,最高]区间内的那个, 自校正。
+            vol_raw = num(6)
+            amount_wan = num(37)
+            amount_yuan = amount_wan * 10000
+            lo_p, hi_p = num(34), num(33)
+            vwap = None
+            if vol_raw and amount_yuan:
+                cand_shou = amount_yuan / (vol_raw * 100)   # 按「手」
+                cand_gu = amount_yuan / vol_raw             # 按「股」
+                if lo_p and hi_p and lo_p <= hi_p:
+                    pad = (hi_p - lo_p) * 0.05 + 1e-9
+                    for c in (cand_shou, cand_gu):
+                        if lo_p - pad <= c <= hi_p + pad:
+                            vwap = c
+                            break
+                if vwap is None:   # 区间不可用时回退: 取与现价同数量级的
+                    cur_p = num(3)
+                    vwap = min((cand_shou, cand_gu),
+                               key=lambda c: abs(c - cur_p)) if cur_p else cand_shou
             out[key[2:]] = {
                 "name": v[1], "price": num(3), "last_close": num(4), "open": num(5),
                 "pct": num(32), "high": num(33), "low": num(34),
-                "amount_wan": num(37), "turnover": num(38),
+                "vol": vol_raw, "amount_wan": amount_wan, "vwap": vwap,
+                "turnover": num(38),
                 "bids": bids, "asks": asks, "depth_imbalance": depth_imbalance,
             }
     return out
@@ -238,13 +268,18 @@ def pick_board_proxies(code, peers, k=3, return_quotes=False):
     return (proxies, q) if return_quotes else proxies
 
 def day_ticks(api, code, date_int):
-    """某日全天分笔(带缓存)"""
+    """某日全天分笔(带缓存)
+
+    注意: 空结果一律不落盘。盘前(或服务器尚未生成当日历史分笔时)调用会拿到空列表,
+    若把它写成0字节缓存, 之后每次读缓存都直接返回空且永不重试 —— 该日数据就被
+    永久"毒化"了, 且完全没有报错征兆。所以只有拿到非空数据才写缓存。"""
     fn = os.path.join(CACHE, f"ticks_{code}_{date_int}.csv")
-    if os.path.exists(fn):
+    if os.path.exists(fn) and os.path.getsize(fn) > 0:
         out = [{"time": r[0], "price": float(r[1]), "vol": int(r[2]),
                 "buyorsell": int(r[3])} for r in csv.reader(open(fn, encoding="utf-8"))]
         out.sort(key=lambda t: t["time"])  # 分页块顺序乱, 必须按时间排序
-        return out
+        if out:
+            return out
     out, start = [], 0
     while True:
         chunk = api.get_history_transaction_data(tdx_market(code), code, start, 2000, date_int)
@@ -255,10 +290,14 @@ def day_ticks(api, code, date_int):
             break
         start += len(chunk)
     out.sort(key=lambda t: t["time"])  # 分页块顺序乱, 必须按时间排序
-    with open(fn, "w", newline="", encoding="utf-8") as f:
+    if not out:
+        return []                      # 不写缓存, 留待下次重试
+    tmp = fn + ".tmp"
+    with open(tmp, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         for t in out:
             w.writerow([t["time"], t["price"], t["vol"], t["buyorsell"]])
+    os.replace(tmp, fn)                # 原子替换, 避免写一半被当成完整缓存
     return out
 
 def _today_ticks_from(api, code):
