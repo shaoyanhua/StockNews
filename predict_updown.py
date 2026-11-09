@@ -187,6 +187,10 @@ def tencent_realtime(codes):
                     vwap = min((cand_shou, cand_gu),
                                key=lambda c: abs(c - cur_p)) if cur_p else cand_shou
             out[key[2:]] = {
+                # qdate: 行情所属交易日(v[30]形如20261008161457)。盘前/休市日它停留在上一交易日,
+                # 此时 price 就是昨收 —— 下游据此判断"实时价"是否真属于今天。
+                "qdate": (f"{v[30][:4]}-{v[30][4:6]}-{v[30][6:8]}"
+                          if len(v) > 30 and len(v[30]) >= 8 and v[30][:8].isdigit() else None),
                 "name": v[1], "price": num(3), "last_close": num(4), "open": num(5),
                 "pct": num(32), "high": num(33), "low": num(34),
                 "vol": vol_raw, "amount_wan": amount_wan, "vwap": vwap,
@@ -196,9 +200,15 @@ def tencent_realtime(codes):
     return out
 
 def tencent_kline_vol(code, n=90):
-    """日K成交量(手, 不复权): {date: vol} — 用于校验分笔完整性"""
+    """日K成交量(手, 不复权): {date: vol} — 用于校验分笔完整性 / 算量比均值
+
+    坑: 腾讯对科创板(688)返回的成交量单位是「股」不是「手」, 实时v[6]与日K量两个接口一致。
+    已用通达信分笔总量交叉验证(2026-10-08): 688256 分笔91,962手 vs 日K 9,195,331 恰为100倍;
+    300308 / 600519 比值均为1.000。日K只有6个字段(无成交额)无法自校正, 故按板块换算,
+    兑现本函数承诺的「手」口径 —— 否则分笔完整性校验对科创板恒报"缺漏"(vol_ratio=0.010)。"""
     bars = _tencent_kline_bars(code, n, "")
-    return {b[0]: float(b[5]) for b in bars if len(b) > 5}
+    k = 100.0 if code.startswith("688") else 1.0
+    return {b[0]: float(b[5]) / k for b in bars if len(b) > 5}
 
 def em_flow_check(code, date=None):
     """东财官方资金流对照通道(可达时). 返回 {main, super, scope} 或 None(被封/超时)"""

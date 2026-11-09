@@ -21,8 +21,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from predict_updown import (run_prediction, day_ticks, today_ticks, amount_at,
-                            tdx_connect, tencent_kline, tencent_realtime, S, UA,
-                            RemoteDataError)
+                            tdx_connect, tencent_kline, tencent_kline_vol,
+                            tencent_realtime, S, UA, RemoteDataError)
 from continuation_analysis import continuation_run
 from resistance_levels import top_forecast
 
@@ -54,6 +54,10 @@ WATCHLIST = [
     ("000636", "风华高科", "被动元件"),
     ("002428", "云南锗业", "稀有金属"), ("000657", "中钨高新", "稀有金属"),
     ("000725", "京东方A", "面板"),
+    ("688143", "长盈通", "特种光纤"), ("603259", "药明康德", "医药/CXO"),
+    ("300475", "香农芯创", "存储"), ("600487", "亨通光电", "光纤光缆"),
+    ("603083", "剑桥科技", "光模块"), ("688655", "迅捷兴", "PCB/CCL"),
+    ("688836", "宇树科技", "人形机器人"),
     # ── 红利/防御 风向标(非交易标的) ──
     # 作用: 避险资金的去处。成长杀跌的同时红利吸金 = 资金在撤离风险资产,
     # 是"有重大利空"的经典特征。这几只不进强势榜(不是可切入方向), 只用来判断市场状态。
@@ -255,7 +259,8 @@ def continuation_group_run(date, cutoff):
 def _em_batch_quote(codes):
     """东财批量资金流(单请求覆盖全池, 尽力而为)。返回 {code: {...}}，任一字段缺失记为None。
     仅用作主力资金增强信号；价格/涨幅一律以 tencent_realtime 为准(见 watchlist_run)。"""
-    secids = ",".join(f"{1 if c.startswith(('6', '9')) else 0}.{c}" for c in codes)
+    # 与 predict_updown.prefix 保持一致: 6/9/5(沪市ETF)开头为沪市
+    secids = ",".join(f"{1 if c.startswith(('6', '9', '5')) else 0}.{c}" for c in codes)
     r = S.get("https://push2.eastmoney.com/api/qt/ulist.np/get", params={
         "fltt": "2",
         "fields": "f12,f13,f14,f2,f3,f8,f9,f23,f20,f62,f184,f66",
@@ -286,7 +291,8 @@ def _em_batch_quote(codes):
 
 
 _TREND_NA = {"above_ma20": None, "above_ma60": None, "ma20_rising": None,
-             "ret20_pct": None, "ret5_pct": None, "ext_from_high20_pct": None}
+             "ret20_pct": None, "ret5_pct": None, "ext_from_high20_pct": None,
+             "avg5_vol": None}
 
 
 def _trend_features(cl):
@@ -312,18 +318,32 @@ def _trend_features(cl):
 
 
 def _trend_snapshot(code):
-    """_trend_features 的实时取数封装, 10分钟缓存(日线变化慢, 无需每次拉取)。
-    注意: 日K在盘中通常滞后一个交易日(今日走势要靠 watchlist_run 传入的实时涨幅补),
-    这里只反映"截至上一交易日收盘"的位置。"""
+    """取"截至上一交易日"的日线原料, 10分钟缓存(日线变化慢, 无需每次拉取)。
+
+    只缓存原料(D-1及之前的前复权收盘序列 + 前5日均量), 不在这里算趋势特征 ——
+    特征由 watchlist_run 用「D-1序列 + 当前实时价」现算, 与盘中回测
+    backtest_intraday_cutoffs.py(`_trend_features(cl_series + [p_now])`)完全同口径。
+    旧实现直接用腾讯日K原样算特征: 盘前不含今日bar(位置停留在昨收), 盘中是否含今日bar
+    又取决于数据源刷新, 且缓存10分钟 —— 回测验证过的准确率并不能代表线上实际跑的口径。
+    显式按日期剔除今日bar, 无论数据源当时是否已生成今日bar, 结果都一致。"""
     now = time.time()
     cached = _wl_trend_cache.get(code)
     if cached and now - cached[0] < _WL_TREND_TTL:
         return cached[1]
+    today = datetime.now().strftime("%Y-%m-%d")
+    result = {"closes": [], "avg5_vol": None}
     try:
         bars = tencent_kline(code, n=70, fq="qfq")  # [(date, close)]
-        result = _trend_features([c for _, c in bars])
+        result["closes"] = [c for d, c in bars if d < today]
+        try:
+            # 前5个完整交易日均量(手) —— 用于盘中算同时段量比
+            vd = tencent_kline_vol(code, n=12)
+            v5 = [v for d, v in sorted(vd.items()) if d < today][-5:]
+            result["avg5_vol"] = (sum(v5) / len(v5)) if len(v5) >= 3 else None
+        except Exception:
+            pass
     except Exception:
-        result = dict(_TREND_NA)
+        pass
     with _wl_lock:
         _wl_trend_cache[code] = (now, result)
     return result
@@ -424,6 +444,63 @@ def _score_stock(pct, trend, mom, main_pct):
     return max(0.0, min(10.0, round(raw, 1))), conds
 
 
+def _minutes_traded(hm):
+    """当日已交易分钟数(9:30-11:30 + 13:00-15:00 共240分钟)。"""
+    t = int(hm[:2]) * 60 + int(hm[3:])
+    if t <= 9 * 60 + 30:
+        return 0
+    if t <= 11 * 60 + 30:
+        return t - (9 * 60 + 30)
+    if t <= 13 * 60:
+        return 120
+    if t <= 15 * 60:
+        return 120 + (t - 13 * 60)
+    return 240
+
+
+def _volume_state(q, avg5_vol, pct, now_hm, dist_high20):
+    """量能四象限(仅标注, 不计入评分)。
+
+    为什么不计分: 三轮实证都判定不稳健 ——
+      第一轮 低涨幅子样本 量比IC=-0.005, 前后两段符号相反(-0.080/+0.056)
+      第二轮 强势票样本   IC=+0.036, 同号但过小
+      第三轮 量×方向2x2   四格次日超额全在+0.04%~+0.17%, 胜率全是53~54%,
+                         "放量上涨"(+0.10%)甚至不如"缩量上涨"(+0.17%)
+    唯一有稳健数据支撑的是减分项「高位放量滞涨」(超额-0.33%, 胜率46%, 前后同号),
+    故单独作为 warn 返回。
+
+    量比口径: 同时段量比 = 当前累计量 /(前5日均量/240 × 已交易分钟数)。
+    直接拿盘中累计量比全天均量会系统性偏小, 必须按已交易时长折算。
+    成交量由 成交额/均价 反推(手), 以绕开腾讯v[6]在科创板是"股"、主板是"手"的单位坑。
+    """
+    mins = _minutes_traded(now_hm)
+    amt_wan, vwap = q.get("amount_wan"), q.get("vwap")
+    if not (avg5_vol and mins >= 5 and amt_wan and vwap):
+        return {"ratio": None, "label": "量能数据不足", "tier": "", "warn": ""}
+    cur_vol = amt_wan * 100 / vwap          # 万元->元/均价/100 = 手
+    expect = avg5_vol / 240 * mins
+    ratio = cur_vol / expect if expect else None
+    if not ratio:
+        return {"ratio": None, "label": "量能数据不足", "tier": "", "warn": ""}
+
+    if ratio >= 1.5:
+        tier, tname = "high", "放量"
+    elif ratio < 0.8:
+        tier, tname = "low", "缩量"
+    else:
+        tier, tname = "mid", "平量"
+    direction = "上涨" if (pct or 0) > 0 else ("下跌" if (pct or 0) < 0 else "平盘")
+    warn = ""
+    if (tier == "high" and dist_high20 is not None and dist_high20 > -3
+            and pct is not None and pct < 2):
+        # 回测口径是「距高点>-3% 且 量比≥1.5 且 涨幅<2%」(含下跌), 条件不动;
+        # 仅按实际涨跌调整措辞 —— 跌着还叫"滞涨"是自相矛盾的。
+        warn = ("高位放量滞涨(疑派发)" if pct >= 0
+                else "高位放量下跌(疑派发)")
+    return {"ratio": round(ratio, 2), "label": f"{tname}{direction}",
+            "tier": tier, "warn": warn}
+
+
 def _shape_state(code, q, main_pct, now_hm):
     """日内形态判别 -> 【突破冲高成功】/【继续强势】/【危险：回落走弱】
 
@@ -471,19 +548,22 @@ def _shape_state(code, q, main_pct, now_hm):
     peak = snap["peak_main"]
     decay_ok = (main_pct is not None and peak is not None
                 and main_pct > 0 and main_pct >= peak * 0.6)
-    # 破线持续时长(分钟)
+    # 破线持续时长 —— 按"交易分钟"算而非墙钟分钟: 11:25破线、13:05复查,
+    # 墙钟差100分钟但真实交易只过了10分钟, 旧算法会把午休90分钟计入, 误触发≥60分钟的危险否决
     below_min = None
     if snap["below_since"]:
-        a = int(snap["below_since"][:2]) * 60 + int(snap["below_since"][3:])
-        b = int(now_hm[:2]) * 60 + int(now_hm[3:])
-        below_min = max(0, b - a)
+        below_min = max(0, _minutes_traded(now_hm) - _minutes_traded(snap["below_since"]))
 
     vw_txt = (f"未持续跌破分时均价线({dvw:+.2f}%"
               + (f", 已破线{below_min}分钟)" if below_min else ")"))
     conds = [
         {"name": f"现价处当日振幅{pos:.0f}%分位(≥70%强)", "met": pos >= 70},
         {"name": vw_txt, "met": dvw >= 0 or (below_min is not None and below_min < 30)},
-        {"name": "分时均价线较开盘抬升", "met": vwap > snap["vwap_first"]},
+        # 用开盘价作基准而非"服务首次观测到的均价": 开盘时均价≈开盘价, 均价高于开盘价即说明
+        # 均价线已抬升。旧实现在服务盘中/盘后才启动时 vwap_first==vwap, 本条恒为False,
+        # 导致晚启动时形态判定系统性偏空。开盘价缺失时才退回首次观测值。
+        {"name": "分时均价线高于开盘价(均价线已抬升)",
+         "met": vwap > (q.get("open") or snap["vwap_first"])},
         {"name": (f"主力占比{main_pct:+.1f}%未从峰值{peak:+.1f}%大幅衰减"
                   if (main_pct is not None and peak is not None) else "主力资金数据缺"),
          "met": decay_ok},
@@ -574,18 +654,18 @@ def watchlist_run():
     except Exception:
         flows = {}  # 东财偶发拒连时, 价格/趋势/涨速仍正常展示, 仅资金标签显示"数据缺"
 
-    trends = {}
+    snaps = {}
     with ThreadPoolExecutor(max_workers=8) as ex:
         futs = {ex.submit(_trend_snapshot, c): c for c in codes}
         for fut in futs:
             code = futs[fut]
             try:
-                trends[code] = fut.result()
+                snaps[code] = fut.result()
             except Exception:
-                trends[code] = {"above_ma20": None, "above_ma60": None, "ma20_rising": None,
-                                 "ret20_pct": None, "ret5_pct": None, "ext_from_high20_pct": None}
+                snaps[code] = {"closes": [], "avg5_vol": None}
 
     now_hm = datetime.now().strftime("%H:%M")
+    today = datetime.now().strftime("%Y-%m-%d")
     items = []
     for code, name, branch in WATCHLIST:
         q = rt.get(code) or {}
@@ -593,7 +673,17 @@ def watchlist_run():
         pct = q.get("pct")
         main_pct = f.get("main_pct")
         mom = _momentum(code, pct)
-        trend = trends.get(code) or {}
+        sn = snaps.get(code) or {}
+        closes = sn.get("closes") or []
+        live_px = q.get("price")
+        # 与盘中回测同口径: D-1序列 + 当前实时价。
+        # 仅当行情确属今天才拼接: 盘前/休市日腾讯返回的"现价"就是昨收, 拼上去会让昨天
+        # 在序列里出现两次, MA/5日涨幅/20日高点全部错位一天。
+        if live_px and q.get("qdate") == today:
+            trend = _trend_features(closes + [live_px])
+        else:
+            trend = _trend_features(closes)
+        trend["avg5_vol"] = sn.get("avg5_vol")
         label, is_main_wave = _classify_wave(trend, pct)
         trend = dict(trend, label=label, is_main_wave=is_main_wave)
         score, conds = _score_stock(pct, trend, mom, main_pct)
@@ -613,6 +703,8 @@ def watchlist_run():
         px = q.get("price")
         drawdown = round((px / hi - 1) * 100, 2) if (hi and px) else None
         shape = _shape_state(code, q, main_pct, now_hm)
+        vol = _volume_state(q, trend.get("avg5_vol"), pct, now_hm,
+                            trend.get("ext_from_high20_pct"))
         if code in FOCUS:
             alert, alert_reason = _alert_of(pct, drawdown)
             # 形态判定为走弱时也升级告警: 它比"当日跌3%"更早(寒武纪10:00破线时
@@ -646,6 +738,8 @@ def watchlist_run():
             "is_focus": code in FOCUS,
             "high": q.get("high"), "drawdown": drawdown,
             "vwap": q.get("vwap"),
+            "vol_ratio": vol["ratio"], "vol_label": vol["label"],
+            "vol_tier": vol["tier"], "vol_warn": vol["warn"],
             "shape": shape["state"], "shape_n": shape.get("n"),
             "shape_conds": shape.get("conds", []),
             "shape_partial": shape.get("partial", False),
@@ -885,6 +979,12 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
 .wlfocusrow .nm { flex:1; min-width:0; }
 .wlfocusrow .pc { font-variant-numeric:tabular-nums; font-weight:700; width:4.2rem; text-align:right; }
 .wlfocusrow .dd { font-variant-numeric:tabular-nums; width:4.6rem; text-align:right; color:var(--muted); font-size:.7rem; }
+.voltag { display:inline-block; font-size:.66rem; padding:.05rem .35rem; border-radius:3px;
+  border:1px dashed var(--line); color:var(--muted); margin-left:.25rem; }
+.voltag.v-high { border-color:var(--up); color:var(--up); }
+.voltag.v-low { border-color:var(--accent); color:var(--accent); }
+.voltag.v-warn { border-style:solid; background:rgba(184,134,11,.14);
+  border-color:#B8860B; color:#8a6508; font-weight:700; }
 .shape { display:inline-block; font-size:.68rem; padding:.06rem .4rem; border-radius:3px;
   font-weight:700; color:#fff; margin-left:.25rem; }
 .shape.s-break { background:var(--up); }
@@ -1510,7 +1610,7 @@ function wlFocusBox(d) {
     const dd = (it.drawdown===null||it.drawdown===undefined) ? '' : `${it.drawdown.toFixed(1)}%`;
     const mark = it.alert === 'danger' ? '🔴' : (it.alert === 'warn' ? '🟡' : '·');
     return `<div class="wlfocusrow">
-      <span class="nm">${mark} ${it.name}${shapeTag(it)}</span>
+      <span class="nm">${mark} ${it.name}${shapeTag(it)}${it.vol_warn?volTag(it):''}</span>
       <span class="dd" title="自日内高点回撤">${dd}</span>
       <span class="pc ${cls(it.pct)}">${it.pct===null?'—':sgn(it.pct,'%')}</span>
     </div>`;
@@ -1541,6 +1641,18 @@ function shapeTag(it) {
   const t = it.shape_note ? ` title="${it.shape_note}"` : '';
   return `<span class="shape ${c}${it.shape_partial?' partial':''}"${t}>${it.shape}${n}</span>`;
 }
+// 量能标签: 仅标注不计分(三轮实证均判定对次日收益无稳健预测力),
+// 唯一例外是"高位放量滞涨"(超额-0.33%,胜率46%,前后两段同号)单独高亮为警示。
+function volTag(it) {
+  if (!it.vol_label) return '';
+  if (it.vol_warn)
+    return `<span class="voltag v-warn" title="量比${it.vol_ratio}">⚠${it.vol_warn}</span>`;
+  if (it.vol_ratio === null || it.vol_ratio === undefined)
+    return `<span class="voltag" title="盘中不足5分钟或缺日均量">${it.vol_label}</span>`;
+  const c = it.vol_tier === 'high' ? 'v-high' : (it.vol_tier === 'low' ? 'v-low' : '');
+  return `<span class="voltag ${c}" title="同时段量比(已按已交易时长折算), 不计入评分">`
+    + `${it.vol_label} ${it.vol_ratio.toFixed(2)}</span>`;
+}
 function wlRow(it) {
   const waveTag = it.is_main_wave ? '<span class="wltag wave">⚡主升浪</span>' :
     `<span class="wltag">${it.trend_label}</span>`;
@@ -1556,7 +1668,7 @@ function wlRow(it) {
     <div class="wlscore ${scoreCls(it.score)}">${it.score.toFixed(1)}</div>
     <div class="wlbody">
       <div class="wlname">${it.name}${it.is_focus?'<span class="focustag">重点</span>':''}<span class="wlbranch">${it.branch}</span></div>
-      <div class="wltags">${shapeTag(it)}${waveTag}${flowTag}</div>
+      <div class="wltags">${shapeTag(it)}${waveTag}${flowTag}${volTag(it)}</div>
       <div class="wlnums">
         <span class="${cls(it.pct)}">${pctTxt}</span>
         <span class="wlspeed">${WL_SPEED_ICON[it.speed_label]||'·'} ${it.speed_label}${chg5}</span>

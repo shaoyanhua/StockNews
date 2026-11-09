@@ -86,6 +86,12 @@ def load(days, refresh=False):
                   file=sys.stderr)
             for c in stale:
                 data.pop(c, None)
+    elif data:
+        # 探针失败(典型是腾讯fqkline被WAF封, 返回501跳转页)时无法判断缓存新旧。
+        # 旧实现这里静默沿用缓存, 曾导致用11天前的数据出结论而毫无察觉 —— 必须显式告警。
+        last = max((v[-1]["date"] for v in data.values() if v), default="?")
+        print(f"  ⚠️ 最新交易日探针失败(腾讯日K可能被WAF拦截), 无法确认缓存新鲜度;"
+              f" 将沿用缓存, 其最新日期为 {last} —— 结论可能基于旧数据!", file=sys.stderr)
 
     out = {}
     for i, (code, name, branch) in enumerate(WATCHLIST):
