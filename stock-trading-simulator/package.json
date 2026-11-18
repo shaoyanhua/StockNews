@@ -1,0 +1,7 @@
+{
+  "name": "stock-trading-simulator",
+  "version": "2.0.0",
+  "private": true,
+  "description": "2026-11-12 真实分钟行情回放与底仓交易练习台",
+  "scripts": { "start": "node server.cjs", "test": "node --test tests/*.test.cjs", "data:build": "python scripts/build-replay-data.py" }
+}

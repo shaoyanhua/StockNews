@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6f8">
+  <meta name="description" content="2026年11月12日真实行情回放，11只底仓证券与2万元现金，练习交易与复盘。">
+  <title>练盘 · 股票模拟交易台</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="terminal.css">
+  <link rel="stylesheet" href="clarity.css">
+  <script src="engine.js" defer></script>
+  <script src="replay-data.js" defer></script>
+  <script src="capital-flow-data.js" defer></script>
+  <script src="capital-flow.js" defer></script>
+  <script src="replay-app.js" defer></script>
+</head>
+<body>
+  <aside class="rail">
+    <a href="#" class="brand" aria-label="练盘首页"><svg viewBox="0 0 32 32"><path d="M5 24V16h5v8zm9 0V8h5v16zm9 0V3h5v21z" fill="currentColor"/></svg></a>
+    <button class="rail-button active" data-view="trade" title="交易台" aria-label="交易台"><svg viewBox="0 0 24 24"><path d="M4 4h6v6H4zm10 0h6v6h-6zM4 14h6v6H4zm10 0h6v6h-6z"/></svg></button>
+    <button class="rail-button" data-view="review" title="交易复盘" aria-label="交易复盘"><svg viewBox="0 0 24 24"><path d="M4 3v17h17M8 15l4-5 4 2 5-7"/></svg></button>
+    <div class="rail-spacer"></div>
+    <button class="rail-button" id="rules-button" title="交易规则" aria-label="交易规则"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 3v1"/></svg></button>
+    <button class="avatar" id="settings-button" title="训练设置" aria-label="训练设置">练</button>
+  </aside>
+  <div class="shell">
+    <header class="header">
+      <div class="wordmark">练盘<span class="wordmark-divider"></span><span class="product-name">实盘回放训练</span><span class="version">MARKET REPLAY</span></div>
+      <div class="header-actions"><span id="save-state" class="saved"><i></i>本地自动保存</span><button class="button small" id="new-session">重新开盘 <span>↺</span></button></div>
+    </header>
+    <main>
+      <section class="page-heading"><div><h1 id="page-title">真实行情，你来交易。</h1><p>初始：7 只股票 × 100 股 · 4 只 ETF × 10,000 份 · 现金 ¥20,000</p></div><div class="session-badge"><span class="live-dot"></span><div><strong>2026.11.12 · 真实分钟回放</strong><small id="session-label">隔夜底仓 · 昨收成本</small></div></div></section>
+      <section class="account-grid" aria-label="账户概览">
+        <article class="account-card primary"><div class="metric-label">总资产 <span>CNY</span></div><div class="metric-value" id="equity">—</div><div class="metric-foot">昨收基准 <span id="initial">—</span></div></article>
+        <article class="account-card"><div class="metric-label">今日盈亏 <span class="tiny-icon">↗</span></div><div class="metric-value" id="pnl">+0.00</div><div class="metric-foot"><span id="return-pct" class="pill">0.00%</span><span>相对昨收基准</span></div></article>
+        <article class="account-card"><div class="metric-label">可用资金 <span class="tiny-icon">◷</span></div><div class="metric-value" id="cash">—</div><div class="metric-foot">委托冻结 <span id="reserved">¥0.00</span></div></article>
+        <article class="account-card"><div class="metric-label">持仓市值 <span class="tiny-icon">◫</span></div><div class="metric-value" id="market-value">0.00</div><div class="metric-foot"><span id="exposure-label">仓位 0.0%</span><div class="exposure-track"><i id="exposure-bar"></i></div></div></article>
+      </section>
+      <section class="market-ribbon" aria-label="市场与情绪"><div id="index-cards" class="index-cards"></div><article class="breadth-card"><div class="ribbon-label">沪深市场情绪 <button class="info-button" id="emotion-info" aria-label="情绪计算说明">ⓘ</button><span id="emotion-state">待开盘</span></div><div class="breadth-main"><strong id="temperature">—</strong><span>上涨占比</span><div id="breadth-counts">等待第一分钟</div></div><div class="breadth-track"><i id="breadth-up"></i></div><div class="ribbon-foot">两市成交额 <b id="market-amount">—</b><span id="breadth-time">09:30</span></div></article></section>
+      <section class="simulation-toolbar"><div class="simulation-clock"><span class="clock-icon">◷</span><strong id="market-clock">09:30</strong><span id="market-day">11 月 12 日</span><span class="separator">/</span><span id="market-status">已暂停</span></div><div class="timeline"><span id="progress-label">0 / 240 分钟</span><div><i id="progress-fill"></i></div></div><div class="simulation-controls"><button id="play" class="button small">▶ 开始回放</button><select id="speed" aria-label="行情播放速度"><option value="1">1×</option><option value="5">5×</option><option value="15">15×</option></select><button id="step" class="button small quiet">＋1 分钟</button><button id="step-five" class="button small quiet">＋5 分钟</button><button id="finish-day" class="button small quiet">推进至收盘 ⇥</button></div></section>
+      <div id="trade-view">
+        <section class="workspace">
+          <aside class="panel watchlist">
+            <div class="panel-heading"><h2>底仓 / 自选 <span class="count">11</span></h2><span class="muted">✦</span></div>
+            <label class="search"><svg viewBox="0 0 20 20"><circle cx="8" cy="8" r="5"/><path d="m12 12 5 5"/></svg><input id="search" placeholder="搜索名称 / 代码" autocomplete="off" aria-label="搜索证券"><kbd>/</kbd></label>
+            <div class="filter-tabs" id="filters"><button class="selected" data-filter="all">全部</button><button data-filter="stock">股票 <span>7</span></button><button data-filter="etf">ETF <span>4</span></button></div>
+            <div class="list-labels"><span>证券 / 持仓</span><button id="sort" title="切换涨跌幅排序">最新价 / 涨跌幅 ⇅</button></div>
+            <div id="watchlist" class="watchlist-items"></div>
+            <div class="watchlist-footer"><span class="mini-dot"></span>真实行情 · 仅显示已回放数据</div>
+          </aside>
+          <section class="panel chart-panel">
+            <div class="quote-heading"><div><div class="quote-title"><h2 id="stock-name">天孚通信</h2><span class="market-tag" id="stock-market">创业板</span></div><div class="quote-code" id="stock-code">300394 · SZ / 光通信</div></div><button class="star" title="已加入自选" aria-label="已加入自选" disabled>★</button></div>
+            <div class="quote-details"><div class="quote-price"><span class="quote-caption">最新价</span><strong id="stock-price">—</strong><span id="stock-delta"></span></div><div class="change-block"><span class="quote-caption">当前涨跌幅</span><strong id="stock-change"></strong></div><div class="quote-mini-grid"><div>今开 <b id="stock-open"></b></div><div>最高 <b id="stock-high"></b></div><div>昨收 <b id="stock-prev"></b></div><div>最低 <b id="stock-low"></b></div></div></div>
+            <div class="chart-toolbar"><div class="chart-tabs" id="chart-tabs"><button class="selected" data-chart="line">分时</button><button data-chart="candles">5 分钟 K 线</button></div><select id="chart-range" aria-label="图表显示范围"><option value="elapsed">放大已走</option><option value="day">全天坐标</option></select><div class="chart-legend"><span class="legend-blue"></span><span id="chart-legend-name">成交价</span><span class="legend-yellow"></span>均价</div></div>
+            <div class="chart-container" id="price-chart" aria-label="真实行情回放图"></div><div id="chart-readout" class="chart-readout">悬停图表查看分钟价格与成交量</div>
+            <div class="chart-bottom"><span>成交量 <strong id="volume-label">—</strong></span><span>实际分钟成交量 · 股 / 份</span></div>
+            <div id="quote-metrics" class="quote-metrics"></div><div class="signal-strip" id="signal-strip"></div><div class="basket-strip" id="basket-strip"></div>
+            <section class="capital-panel" aria-label="主力与特大单资金流向"><div class="capital-heading"><h3>主力 / 特大单资金</h3><span id="capital-time"></span></div><div id="capital-content"></div><p id="capital-note" class="capital-note"></p><details id="capital-reveal"><summary>查看当日收盘资金（会提前揭示结果）</summary><div id="capital-close"></div></details><a id="capital-source" target="_blank" rel="noopener noreferrer">查看东方财富资金来源 ↗</a></section>
+          </section>
+          <aside class="panel order-panel">
+            <div class="panel-heading"><h2>交易委托</h2><span class="outline-badge">虚拟账户</span></div>
+            <div id="order-holding" class="order-holding"></div><div class="side-switch" id="side-switch"><button class="buy selected" data-side="buy">买入</button><button class="sell" data-side="sell">卖出</button></div>
+            <form id="order-form">
+              <div class="order-security"><strong id="order-name">天孚通信</strong><span id="order-code">300394</span></div>
+              <label class="field-label" for="order-type">委托方式</label><select id="order-type"><option value="market">市价委托</option><option value="limit">限价委托</option></select>
+              <div class="field-heading"><label class="field-label" for="order-price">委托价格</label><span id="price-help">对手价模拟成交</span></div>
+              <div class="number-field"><span>¥</span><input id="order-price" type="number" min="0.01" step="0.01" disabled aria-label="委托价格"><span id="price-mode">市价</span></div>
+              <div class="field-heading"><label class="field-label" for="quantity">委托数量</label><span id="max-quantity">最多 0 股</span></div>
+              <div class="number-field quantity-field"><button type="button" id="qty-minus" aria-label="减少100股或份">−</button><input id="quantity" type="number" value="100" min="100" step="100" inputmode="numeric" aria-label="委托数量"><span id="quantity-unit">股</span><button type="button" id="qty-plus" aria-label="增加100股或份">＋</button></div>
+              <div class="quick-lots"><button type="button" data-qty="100">100 股</button><button type="button" data-qty="1000">1,000 份</button><button type="button" data-qty="10000">10,000 份</button></div><div class="fractions"><button type="button" data-fraction="0.25">1/4</button><button type="button" data-fraction="0.5">1/2</button><button type="button" data-fraction="0.75">3/4</button><button type="button" data-fraction="1">全部</button></div>
+              <details class="trade-plan"><summary>交易计划（选填）</summary><label for="trade-note" class="sr-only">交易计划</label><textarea id="trade-note" rows="2" maxlength="240" placeholder="为什么买 / 卖？何时退出？"></textarea></details>
+              <div class="estimate"><div><span>预计成交金额</span><strong id="estimate-amount">¥0.00</strong></div><div><span>预计手续费</span><span id="estimate-fee">¥0.00</span></div><div class="estimate-total"><span id="estimate-total-label">预计支出</span><strong id="estimate-total">¥0.00</strong></div></div>
+              <div id="order-error" role="alert"></div><button type="submit" id="submit-order" class="submit-order">买入 · 模拟委托</button>
+            </form>
+            <p class="order-footnote">底仓当日可卖 · 新买入 T+1 锁定</p>
+          </aside>
+        </section>
+        <section class="panel activity-panel">
+          <div class="activity-header"><div class="activity-tabs" id="activity-tabs"><button class="selected" data-tab="positions">当前持仓 <span id="position-count">0</span></button><button data-tab="orders">委托记录 <span id="order-count">0</span></button><button data-tab="trades">成交记录 <span id="trade-count">0</span></button></div><button class="text-button" id="export-csv">↓ 导出成交</button></div>
+          <div id="activity-content"></div>
+        </section>
+      </div>
+      <section id="review-view" hidden>
+        <div class="review-grid"><article class="panel review-chart"><div class="panel-heading"><h2>账户净值曲线</h2><span class="muted">从第一笔决策开始</span></div><div id="equity-chart"></div></article><article class="panel review-summary"><div class="panel-heading"><h2>交易表现</h2><span class="outline-badge">本次练习</span></div><div id="review-metrics"></div></article></div>
+        <article class="panel journal"><div class="panel-heading"><h2>交易日志</h2><span class="muted">记录逻辑，复盘决策</span></div><div id="journal-list"></div></article>
+      </section>
+      <footer><span><strong>练盘</strong> &nbsp; 把经验留在这里，把纪律带入交易。</span><span>行情日期 2026-11-12 · 通达信分钟数据 · 交易为模拟</span></footer>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <dialog id="rules-dialog"><div class="dialog-heading"><h2>行情、指标与模拟规则</h2><button class="close-dialog" aria-label="关闭">×</button></div><div class="rules-content">
+<h3>真实行情，按分钟回放</h3><p>数据日期为 <b>2026-11-12</b>，来自通达信 MCP。11 只证券各 240 根实际 1 分钟 OHLCV，另含上证、深证、创业板指数。回放从 09:30 开始，逐分钟推进至 15:00；午休自动跳过。不会提前显示未回放走势，不持续更新，不虚构次日行情。</p>
+<h3>你的初始账户</h3><p>7 只股票各 100 股，4 只 ETF 各 10,000 份，现金 20,000 元。预置持仓按隔夜底仓处理，开盘即可卖。未提供实际成本，统一以 11 月 11 日昨收作为成本，未收取历史买入费；今日盈亏与收益率以这组昨收资产为基准，包含开盘跳空。新买入部分受 T+1 限制。</p>
+<h3>成交量、量能与趋势</h3><p>成交量为实际股 / 份数；成交额为人民币。均价 = 当前累计成交额 ÷ 累计成交量。量比（估）= 当前每分钟平均成交量 ÷ 前 5 个交易日每分钟平均成交量。5 分钟量能比 = 最近 5 分钟成交量 ÷ 前 5 分钟成交量，不足 10 分钟或分母为零显示“—”。换手率按当日快照推算的流通规模估算。</p>
+<p>5 分钟 K 线使用真实分钟开、高、低、收聚合；最后一根可能尚未结束。5 分钟涨速、距均价和涨跌状态都只使用当前已发生的数据；趋势标签是对这些数据的描述，不是买卖信号。</p>
+<h3>市场情绪</h3><p>温度 = 上涨家数 ÷（上涨家数＋下跌家数）×100%。采用当前回放分钟的沪深指数接口涨跌家数，不含平盘和北交所；创业板是深市子集，不重复相加。小于 30% 为偏冷，30–45% 偏弱，45–55% 分歧，55–70% 偏强，70% 以上偏热。温度是市场广度比例，不是预测概率。自选情绪单列 11 只证券涨跌及站上均价数量。</p>
+<h3>模拟成交与费用</h3><p>市价按当前可见价加 / 减一个报价单位成交；限价单在后续分钟收盘对手价触及限价时整笔成交，不使用当前分钟已过去的高低点撮合。没有重建历史盘口、排队、部分成交与集合竞价。涨停不买、跌停不卖。佣金万 2.5、最低 5 元；股票卖出印花税万 5，股票双向过户费万 0.1；ETF 不收后两项。参数为练习假设。</p>
+<h3>主力与特大单资金</h3><p>资金独立核对日期，与 2026-11-12 回放匹配。主力包含大单与特大单（来源称超大单），二者不可再次相加。净额为流入减流出；净额不能反推流入、流出总额。历史接口若仅返回日净额，盘中标记“收盘后可见”，可主动展开收盘数据；没有可靠数据的字段显示“暂无数据”，不按零处理、不用涨跌幅或内外盘推算。资金分类沿用来源口径，不等同于机构真实持仓变化。</p>
+<h3>数据核对与限制</h3><p>股票与指数接口的原始价格已校正 10 倍缩放；ETF 保留三位小数。各标的分钟收盘价、高低价与收盘快照已核对。原始分钟累计量与快照最多相差 104 股 / 份，保留原值，未补造数据。完整来源和校验结果在工程 data 文件夹。</p>
+<h3>账户保存</h3><p>本版本使用独立回放存档，旧版随机模拟存档仍保留。自动存档仅在当前浏览器中生效，可导出 JSON 恢复，CSV 用于成交复盘。重新开盘会替换本轮回放，开始前可先备份。相对持有收益 = 当前总资产 − 同一初始组合始终不交易时的资产。</p>
+</div><button class="button dark close-dialog">了解，继续练习</button></dialog>
+<dialog id="settings-dialog"><div class="dialog-heading"><h2>重新开盘 · 2026 年 11 月 12 日</h2><button class="close-dialog" aria-label="关闭">×</button></div><p class="dialog-intro">恢复 09:30 的预置账户。你可以用同一段真实走势，练习不同的交易决策。</p><div class="preset-summary"><strong>7 × 100 股</strong><strong>4 × 10,000 份</strong><strong>现金 ¥20,000</strong></div><p class="reset-note">本轮交易和进度将被替换，旧版随机行情存档不受影响。建议先备份本轮练习。</p><form id="reset-form"><label class="checkbox-label"><input type="checkbox" id="confirm-reset" required>我确认替换当前回放账户</label><div class="dialog-actions"><button type="button" class="button" id="backup">↓ 备份当前练习</button><button type="submit" class="button dark">恢复底仓并开盘</button></div></form><div class="import-row"><span>已有回放备份？</span><label class="text-button" for="import-backup">导入并恢复</label><input type="file" id="import-backup" accept=".json,application/json" hidden></div></dialog>
+<dialog id="next-dialog"><div class="dialog-heading"><h2>推进至当日收盘</h2><button class="close-dialog" aria-label="关闭">×</button></div><p class="dialog-intro">会逐分钟执行余下真实行情，满足条件的挂单仍会成交。15:00 后剩余挂单失效，停止交易并显示本轮成绩。</p><div class="dialog-actions"><button class="button close-dialog">继续当前时刻</button><button class="button dark" id="confirm-next">推进至 15:00 →</button></div></dialog>
+</body></html>

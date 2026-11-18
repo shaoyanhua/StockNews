@@ -1,0 +1,114 @@
+[
+  {
+    "code": "300394",
+    "minuteCount": 240,
+    "priceDivisor": 10,
+    "volumeDelta": 100,
+    "amountDelta": 432.5,
+    "closeMatches": true
+  },
+  {
+    "code": "600487",
+    "minuteCount": 240,
+    "priceDivisor": 10,
+    "volumeDelta": 0,
+    "amountDelta": -237,
+    "closeMatches": true
+  },
+  {
+    "code": "000636",
+    "minuteCount": 240,
+    "priceDivisor": 10,
+    "volumeDelta": 100,
+    "amountDelta": -14.5,
+    "closeMatches": true
+  },
+  {
+    "code": "300308",
+    "minuteCount": 240,
+    "priceDivisor": 10,
+    "volumeDelta": 0,
+    "amountDelta": -1048,
+    "closeMatches": true
+  },
+  {
+    "code": "600183",
+    "minuteCount": 240,
+    "priceDivisor": 10,
+    "volumeDelta": 0,
+    "amountDelta": -238,
+    "closeMatches": true
+  },
+  {
+    "code": "300475",
+    "minuteCount": 240,
+    "priceDivisor": 10,
+    "volumeDelta": 100,
+    "amountDelta": -69.5,
+    "closeMatches": true
+  },
+  {
+    "code": "600206",
+    "minuteCount": 240,
+    "priceDivisor": 10,
+    "volumeDelta": 0,
+    "amountDelta": -10,
+    "closeMatches": true
+  },
+  {
+    "code": "515050",
+    "minuteCount": 240,
+    "priceDivisor": 1,
+    "volumeDelta": 100,
+    "amountDelta": 22,
+    "closeMatches": true
+  },
+  {
+    "code": "560780",
+    "minuteCount": 240,
+    "priceDivisor": 1,
+    "volumeDelta": 100,
+    "amountDelta": -18,
+    "closeMatches": true
+  },
+  {
+    "code": "588200",
+    "minuteCount": 240,
+    "priceDivisor": 1,
+    "volumeDelta": 104,
+    "amountDelta": 94,
+    "closeMatches": true
+  },
+  {
+    "code": "159530",
+    "minuteCount": 240,
+    "priceDivisor": 1,
+    "volumeDelta": 100,
+    "amountDelta": -133.44,
+    "closeMatches": true
+  },
+  {
+    "code": "999999",
+    "minuteCount": 240,
+    "priceDivisor": 10,
+    "volumeDelta": null,
+    "amountDelta": 19648,
+    "closeMatches": true
+  },
+  {
+    "code": "399001",
+    "minuteCount": 240,
+    "priceDivisor": 10,
+    "volumeDelta": null,
+    "amountDelta": 0,
+    "closeMatches": true
+  },
+  {
+    "code": "399006",
+    "minuteCount": 240,
+    "priceDivisor": 10,
+    "volumeDelta": null,
+    "amountDelta": 0,
+    "closeMatches": true
+  }
+]

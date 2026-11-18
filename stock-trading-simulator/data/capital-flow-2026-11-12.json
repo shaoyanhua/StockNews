@@ -1,0 +1,96 @@
+{
+  "date": "2026-11-12",
+  "source": "东方财富资金流向历史日线",
+  "unit": "CNY",
+  "retrievedAt": "2026-11-13T07:43:23.489176+00:00",
+  "granularity": "daily",
+  "assets": {
+    "300394": {
+      "sourceUrl": "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=0.300394&lmt=3&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56",
+      "status": "daily-net-only",
+      "main": {
+        "inflow": null,
+        "outflow": null,
+        "net": -357909856.0
+      },
+      "super": {
+        "inflow": null,
+        "outflow": null,
+        "net": -76378384.0
+      },
+      "date": "2026-11-12",
+      "asOf": "15:00",
+      "captureNote": "Retained successful endpoint response observed before subsequent connection failures."
+    },
+    "600487": {
+      "sourceUrl": "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=1.600487&lmt=3&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56",
+      "status": "unavailable",
+      "main": null,
+      "super": null,
+      "reason": "ProxyError"
+    },
+    "000636": {
+      "sourceUrl": "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=0.000636&lmt=3&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56",
+      "status": "unavailable",
+      "main": null,
+      "super": null,
+      "reason": "ProxyError"
+    },
+    "300308": {
+      "sourceUrl": "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=0.300308&lmt=3&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56",
+      "status": "unavailable",
+      "main": null,
+      "super": null,
+      "reason": "ProxyError"
+    },
+    "600183": {
+      "sourceUrl": "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=1.600183&lmt=3&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56",
+      "status": "unavailable",
+      "main": null,
+      "super": null,
+      "reason": "ProxyError"
+    },
+    "300475": {
+      "sourceUrl": "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=0.300475&lmt=3&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56",
+      "status": "unavailable",
+      "main": null,
+      "super": null,
+      "reason": "ProxyError"
+    },
+    "600206": {
+      "sourceUrl": "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=1.600206&lmt=3&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56",
+      "status": "unavailable",
+      "main": null,
+      "super": null,
+      "reason": "ProxyError"
+    },
+    "515050": {
+      "sourceUrl": "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=1.515050&lmt=3&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56",
+      "status": "unavailable",
+      "main": null,
+      "super": null,
+      "reason": "ProxyError"
+    },
+    "560780": {
+      "sourceUrl": "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=1.560780&lmt=3&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56",
+      "status": "unavailable",
+      "main": null,
+      "super": null,
+      "reason": "ProxyError"
+    },
+    "588200": {
+      "sourceUrl": "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=1.588200&lmt=3&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56",
+      "status": "unavailable",
+      "main": null,
+      "super": null,
+      "reason": "ProxyError"
+    },
+    "159530": {
+      "sourceUrl": "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=0.159530&lmt=3&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56",
+      "status": "unavailable",
+      "main": null,
+      "super": null,
+      "reason": "ProxyError"
+    }
+  }
+}
