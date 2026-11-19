@@ -58,6 +58,10 @@ WATCHLIST = [
     ("300475", "香农芯创", "存储"), ("600487", "亨通光电", "光纤光缆"),
     ("603083", "剑桥科技", "光模块"), ("688655", "迅捷兴", "PCB/CCL"),
     ("688836", "宇树科技", "人形机器人"),
+    ("688825", "长鑫科技", "存储"), ("688629", "华丰科技", "连接器"),
+    # ETF: 价格3位小数, 东财个股资金流多半缺失(显示"资金数据缺"), 评分按缺失口径计
+    ("588200", "科创芯片ETF嘉实", "ETF"), ("560780", "半导体设备ETF广发", "ETF"),
+    ("515050", "通信ETF华夏", "ETF"), ("159530", "机器人ETF易方达", "ETF"),
     # ── 红利/防御 风向标(非交易标的) ──
     # 作用: 避险资金的去处。成长杀跌的同时红利吸金 = 资金在撤离风险资产,
     # 是"有重大利空"的经典特征。这几只不进强势榜(不是可切入方向), 只用来判断市场状态。
@@ -290,6 +294,29 @@ def _em_batch_quote(codes):
     return out
 
 
+_EM_TTL = 30            # 东财资金流缓存(秒): 页面3秒轮询, 但资金流只需30秒级刷新, 且避免触发风控
+_EM_STALE_MAX = 300     # 东财连续失败时, 旧数据最多沿用的秒数
+_wl_em = {"ts": 0.0, "ok_ts": 0.0, "data": {}}
+
+
+def _em_cached(codes):
+    """带TTL的东财资金流。失败时沿用旧数据(超过 _EM_STALE_MAX 则视为缺失)。"""
+    now = time.time()
+    with _wl_lock:
+        if now - _wl_em["ts"] < _EM_TTL:
+            return _wl_em["data"] if now - _wl_em["ok_ts"] < _EM_STALE_MAX else {}
+        _wl_em["ts"] = now   # 先占位, 防止并发请求同时打东财
+    try:
+        data = _em_batch_quote(codes)
+        with _wl_lock:
+            if data:
+                _wl_em["data"], _wl_em["ok_ts"] = data, time.time()
+    except Exception:
+        pass
+    with _wl_lock:
+        return _wl_em["data"] if time.time() - _wl_em["ok_ts"] < _EM_STALE_MAX else {}
+
+
 _TREND_NA = {"above_ma20": None, "above_ma60": None, "ma20_rising": None,
              "ret20_pct": None, "ret5_pct": None, "ext_from_high20_pct": None,
              "avg5_vol": None}
@@ -385,13 +412,19 @@ def _momentum(code, pct):
             hist.pop(0)
         snap = list(hist)
 
-    def delta(seconds):
+    def delta(seconds, max_age=None):
         if pct is None:
             return None
         target = now - seconds
-        cand = [p for t, p in snap if t <= target]
-        return round(pct - cand[-1], 2) if cand else None
+        cand = [(t, p) for t, p in snap if t <= target]
+        if not cand:
+            return None
+        # 短周期要求样本贴近目标时刻, 否则(轮询停过/刚启动)会拿很旧的样本冒充6秒走势
+        if max_age is not None and target - cand[-1][0] > max_age:
+            return None
+        return round(pct - cand[-1][1], 2)
 
+    d6, d20 = delta(6, 6), delta(20, 10)
     d5, d15 = delta(300), delta(900)
     if pct is None:
         speed_label = "行情数据缺"
@@ -407,7 +440,8 @@ def _momentum(code, pct):
         speed_label = "转弱"
     else:
         speed_label = "加速下跌"
-    return {"chg_5m": d5, "chg_15m": d15, "speed_label": speed_label}
+    return {"chg_6s": d6, "chg_20s": d20, "chg_5m": d5, "chg_15m": d15,
+            "speed_label": speed_label}
 
 
 def _score_stock(pct, trend, mom, main_pct):
@@ -649,10 +683,7 @@ def watchlist_run():
         rt = tencent_realtime(codes)  # 价格/涨幅主数据源, 稳定可达
     except Exception:
         rt = {}
-    try:
-        flows = _em_batch_quote(codes)  # 主力资金增强信号, 尽力而为
-    except Exception:
-        flows = {}  # 东财偶发拒连时, 价格/趋势/涨速仍正常展示, 仅资金标签显示"数据缺"
+    flows = _em_cached(codes)  # 主力资金增强信号, 尽力而为; 东财拒连时仅资金标签显示"数据缺"
 
     snaps = {}
     with ThreadPoolExecutor(max_workers=8) as ex:
@@ -723,12 +754,14 @@ def watchlist_run():
             "price": q.get("price"), "pct": pct, "turnover": q.get("turnover"),
             "mcap_yi": f.get("mcap_yi"),
             "main_net_yi": f.get("main_net_yi"), "main_pct": main_pct,
+            "super_net_yi": f.get("super_net_yi"),
             "flow_label": flow_label,
             "main_inflow": bool(main_pct is not None and main_pct > 0),
             "trend_label": trend.get("label", "数据不足"),
             "is_main_wave": bool(trend.get("is_main_wave")),
             "ret20_pct": trend.get("ret20_pct"),
             "ext_from_high20_pct": trend.get("ext_from_high20_pct"),
+            "chg_6s": mom.get("chg_6s"), "chg_20s": mom.get("chg_20s"),
             "chg_5m": mom.get("chg_5m"), "chg_15m": mom.get("chg_15m"),
             "speed_label": mom.get("speed_label"),
             "score": score, "conds": conds,
@@ -920,10 +953,12 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
 .book th:first-child,.book td:first-child { text-align:left; }
 .layout { display:flex; gap:1rem; align-items:flex-start; }
 .mainCol { flex:1; min-width:0; }
-.wlCol { width:360px; flex:0 0 360px; position:sticky; top:.8rem;
-  max-height:calc(100vh - 1.6rem); overflow:auto; }
-@media (max-width:960px) { .layout{flex-direction:column;} .wlCol{width:100%;flex:0 0 auto;
-  position:static; max-height:none;} }
+.wlCol { flex:0 0 calc(80% - .5rem); max-width:calc(80% - .5rem); min-width:0; }
+@media (max-width:1100px) { .layout{flex-direction:column;} .wlCol{flex:0 0 auto;
+  width:100%; max-width:100%;} .mainCol{width:100%;} }
+.wltop { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+  gap:0 .8rem; align-items:start; }
+.wltop > div:empty { display:none; }
 .wlpanel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:.8rem; }
 .wlhead { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:.5rem; gap:.5rem; }
 .wlhead h2 { font-size:1rem; margin:0; }
@@ -1020,13 +1055,36 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
 .wlrow.strong { border-color:var(--up); box-shadow:inset 3px 0 0 var(--up); }
 .wllist { display:flex; flex-direction:column; gap:.5rem; }
 .wllisthead { font-size:.72rem; color:var(--muted); margin:.2rem 0 .1rem; }
-.wlrow { display:flex; gap:.6rem; align-items:flex-start; background:var(--bg);
-  border:1px solid var(--line); border-radius:6px; padding:.5rem .6rem; }
-.wlscore { flex:0 0 2.7rem; font-size:1.7rem; font-weight:800; line-height:1.1;
-  font-variant-numeric:tabular-nums; text-align:center; border-radius:6px; padding:.35rem 0; color:#fff; }
+.wlrow { background:var(--bg); border:1px solid var(--line); border-radius:6px;
+  padding:.35rem .6rem; }
+.wlline, .wlhdrrow { display:grid; align-items:center; column-gap:.6rem;
+  grid-template-columns:2.8rem 12rem 6rem 4.6rem 4.6rem 4.6rem 5.6rem 8rem 5.6rem; }
+.wlhdrrow { position:sticky; top:0; z-index:2; background:var(--panel); font-size:.7rem;
+  color:var(--muted); padding:.3rem .6rem; border-bottom:1px solid var(--line); }
+.wlhdrrow span, .wlcell { text-align:right; font-variant-numeric:tabular-nums; }
+.wlhdrrow span:first-child, .wlhdrrow span:nth-child(2),
+.wlhdrrow span:nth-child(8), .wlline > .wlnamecell { text-align:left; }
+.wlcell { font-size:.84rem; font-weight:600; }
+.wlcell small { display:block; font-size:.66rem; font-weight:400; color:var(--muted); }
+.wlcell.wlpct { font-size:1.45rem; font-weight:800; }
+.wlfocusrow .pc { font-size:.95rem; }
+.layout.hideMain .mainCol { display:none; }
+.layout.hideMain .wlCol { flex:1 1 100%; max-width:100%; }
+.wlhead button.ghost, .mainhead button.ghost { background:var(--panel); color:var(--accent);
+  border:1px solid var(--accent); }
+.mainhead { display:flex; justify-content:flex-end; margin-bottom:.5rem; }
+.mainhead button { padding:.2rem .7rem; font-size:.78rem; }
+.mainCol .disc .step { display:block; white-space:normal; margin-right:0; }
+.wlline .wltags { margin:0; }
+.wlwhy { display:flex; flex-wrap:wrap; align-items:center; gap:.25rem; margin-top:.25rem; }
+.wlwhy .shape { margin-left:0; }
+.wlwhy .wltag.up { color:var(--up); border-color:var(--up); }
+.wlwhy .wltag.dn { color:var(--dn); border-color:var(--dn); }
+.wlscore { font-size:1.25rem; font-weight:800; line-height:1.1;
+  font-variant-numeric:tabular-nums; text-align:center; border-radius:6px; padding:.25rem 0; color:#fff; }
 .wl-strong { background:var(--up); } .wl-mid { background:#B8860B; } .wl-weak { background:var(--dn); }
 .wlbody { flex:1; min-width:0; }
-.wlname { font-size:.86rem; font-weight:600; }
+.wlname { font-size:1.02rem; font-weight:700; }
 .wlbranch { color:var(--muted); font-weight:400; font-size:.72rem; margin-left:.3rem; }
 .wltags { display:flex; flex-wrap:wrap; gap:.3rem; margin:.3rem 0; }
 .wltag { font-size:.68rem; padding:.1rem .4rem; border-radius:3px; background:var(--panel);
@@ -1037,13 +1095,36 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
 .wlnums { display:flex; justify-content:space-between; font-size:.78rem; font-variant-numeric:tabular-nums; }
 .wlspeed { color:var(--muted); }
 .wldetails { margin-top:.3rem; } .wldetails summary { font-size:.7rem; color:var(--muted); cursor:pointer; }
-.wldetails .condlist { grid-template-columns:1fr; margin-top:.3rem; }
+.wldetails .condlist { margin-top:.3rem; }
 </style></head><body>
 <h1>涨跌预测台 · 六股</h1>
 <p class="sub">特征: 主力净流入 / 特大单净流入 / 板块涨跌 / 自身涨跌 ·
 多通道: 通达信分笔(主) + 腾讯量能校验 + 东财官方对照 + 全同业板块二通道 ·
 高置信(≥60%)才给买卖建议, 否则观望 · 概率仅供研究, 非投资建议</p>
-<div class="layout"><div class="mainCol">
+<div class="layout">
+<div class="wlCol">
+  <div class="wlpanel">
+    <div class="wlhead">
+      <h2>换赛道雷达</h2>
+      <span>
+        <button class="ghost" id="wlToggleMain" onclick="toggleMainCol()">隐藏预测台</button>
+        <button onclick="refreshWatchlist()">刷新</button>
+        <span class="status" id="wlStatus">加载中…</span>
+      </span>
+    </div>
+    <div class="wltop">
+      <div id="wlRisk"></div>
+      <div id="wlAlerts"></div>
+      <div id="wlFocus"></div>
+      <div id="wlStrong"></div>
+    </div>
+    <div class="wlsectors" id="wlSectors"></div>
+    <div class="wllisthead" id="wlListHead"></div>
+    <div class="wllist" id="wlList"></div>
+  </div>
+</div>
+<div class="mainCol">
+<div class="mainhead"><button class="ghost" onclick="toggleMainCol()">隐藏此栏 ▶</button></div>
 <div class="bar">
   <label>模式</label>
   <select id="mode"><option value="live">实时(今天)</option>
@@ -1071,24 +1152,6 @@ button:hover { opacity:.9; } button:disabled { opacity:.5; cursor:wait; }
 <div id="topPanel"></div>
 <p class="note">首次跑某只股票需重构约40天分笔(1~3分钟), 之后有本地缓存(约10秒)。
 实时模式请在交易时段使用; 回测日期需为交易日。资金流为分笔重构口径, 与东财APP绝对值不可直接对照。</p>
-</div>
-<div class="wlCol">
-  <div class="wlpanel">
-    <div class="wlhead">
-      <h2>换赛道雷达</h2>
-      <span>
-        <button onclick="refreshWatchlist()">刷新</button>
-        <span class="status" id="wlStatus">加载中…</span>
-      </span>
-    </div>
-    <div id="wlRisk"></div>
-    <div id="wlAlerts"></div>
-    <div id="wlFocus"></div>
-    <div id="wlStrong"></div>
-    <div class="wlsectors" id="wlSectors"></div>
-    <div class="wllisthead" id="wlListHead"></div>
-    <div class="wllist" id="wlList"></div>
-  </div>
 </div>
 </div>
 <script>
@@ -1653,31 +1716,58 @@ function volTag(it) {
   return `<span class="voltag ${c}" title="同时段量比(已按已交易时长折算), 不计入评分">`
     + `${it.vol_label} ${it.vol_ratio.toFixed(2)}</span>`;
 }
+// 短周期走势单元格: 涨幅变化(百分点), 无足够样本时显示"—"
+function wlTrendCell(v) {
+  if (v === null || v === undefined) return '<div class="wlcell">—</div>';
+  return `<div class="wlcell ${cls(v)}">${sgn(v,'%')}</div>`;
+}
+// 评分依据: 命中的条件常显, 完整条件(含未命中) + 形态判定五项放进折叠区。
+// 3秒重绘会重建DOM, 展开状态按code记住, 否则点开后立刻被收起。
+const _wlOpen = new Set();
+function wlToggle(code, open) { if (open) _wlOpen.add(code); else _wlOpen.delete(code); }
 function wlRow(it) {
   const waveTag = it.is_main_wave ? '<span class="wltag wave">⚡主升浪</span>' :
     `<span class="wltag">${it.trend_label}</span>`;
   const flowTag = it.main_inflow ?
     `<span class="wltag flow">✓资金流入${it.main_pct!=null?' '+it.main_pct.toFixed(1)+'%':''}</span>` :
     `<span class="wltag flowout">${it.flow_label}</span>`;
-  const chg5 = (it.chg_5m===null||it.chg_5m===undefined) ? '' : ` (5m ${sgn(it.chg_5m,'%')})`;
   const pctTxt = it.pct===null||it.pct===undefined ? '—' : sgn(it.pct,'%');
-  const condHtml = (it.conds||[]).map(condRow).join('');
+  const px = it.price!=null ? it.price.toFixed(/^(5|159)/.test(it.code) ? 3 : 2) : '—';
+  const speed = `${WL_SPEED_ICON[it.speed_label]||'·'}${it.speed_label}`;
+  const sup = it.super_net_yi;
+  const supCell = (sup===null||sup===undefined) ? '<div class="wlcell">—</div>'
+    : `<div class="wlcell ${cls(sup)}">${sgn(sup,'亿')}</div>`;
+  const metChips = (it.conds||[]).filter(c => c.met).map(c =>
+    `<span class="wltag ${c.pts>0?'up':'dn'}">${c.name} ${c.pts>0?'+':''}${c.pts}</span>`).join('');
+  const shapeHtml = (it.shape_conds||[]).map(c =>
+    `<div class="cond"><span>${c.met?'✓':'·'} ${c.name}</span></div>`).join('');
   const rowCls = (it.is_strong?' strong':'') + (it.is_focus?' focus':'')
     + (it.alert==='danger'?' alertdanger':(it.alert==='warn'?' alertwarn':''));
   return `<div class="wlrow${rowCls}">
-    <div class="wlscore ${scoreCls(it.score)}">${it.score.toFixed(1)}</div>
-    <div class="wlbody">
-      <div class="wlname">${it.name}${it.is_focus?'<span class="focustag">重点</span>':''}<span class="wlbranch">${it.branch}</span></div>
-      <div class="wltags">${shapeTag(it)}${waveTag}${flowTag}${volTag(it)}</div>
-      <div class="wlnums">
-        <span class="${cls(it.pct)}">${pctTxt}</span>
-        <span class="wlspeed">${WL_SPEED_ICON[it.speed_label]||'·'} ${it.speed_label}${chg5}</span>
-      </div>
-      <details class="wldetails"><summary>评分依据</summary>
-        <div class="condlist">${condHtml}</div></details>
+    <div class="wlline">
+      <div class="wlscore ${scoreCls(it.score)}">${it.score.toFixed(1)}</div>
+      <div class="wlnamecell"><div class="wlname">${it.name}${it.is_focus?'<span class="focustag">重点</span>':''}<span class="wlbranch">${it.branch}</span></div>
+        <div class="wlbranch" style="margin:0">${it.code}</div></div>
+      <div class="wlcell wlpct ${cls(it.pct)}">${pctTxt}</div>
+      <div class="wlcell">${px}</div>
+      ${wlTrendCell(it.chg_6s)}
+      ${wlTrendCell(it.chg_20s)}
+      <div class="wlcell ${cls(it.chg_5m)}">${(it.chg_5m===null||it.chg_5m===undefined)?'—':sgn(it.chg_5m,'%')}<small>${speed}</small></div>
+      <div class="wlcell" style="text-align:left">${volTag(it) || '—'}</div>
+      ${supCell}
     </div>
+    <div class="wlwhy">${shapeTag(it)}${waveTag}${flowTag}${metChips}</div>
+    <details class="wldetails" ${_wlOpen.has(it.code)?'open':''}
+        ontoggle="wlToggle('${it.code}', this.open)"><summary>全部评分条件 / 形态判定</summary>
+      <div class="condlist">${(it.conds||[]).map(condRow).join('')}</div>
+      ${shapeHtml?`<div class="condlist">${shapeHtml}</div>`:''}</details>
   </div>`;
 }
+const WL_HDR = `<div class="wlhdrrow"><span>评分</span><span>股票</span><span>涨跌幅</span>
+  <span>现价</span><span title="近6秒涨幅变化">6秒</span><span title="近20秒涨幅变化">20秒</span>
+  <span title="近5分钟涨幅变化 + 涨速判断">5分钟</span>
+  <span style="text-align:left" title="同时段量比, 对比前5日均量, 不计入评分">量能(量比)</span>
+  <span title="东财特大单当日净流入累计">特大资金</span></div>`;
 // 告警去重: 同一只票在同一告警级别下只提醒一次, 升级(warn->danger)会再提醒一次,
 // 避免30秒轮询把同一个告警反复弹出来。
 const _wlNotified = {};
@@ -1708,10 +1798,23 @@ function notifyAlerts(d) {
     }
   } catch (_) {}
 }
-let _wlTimer = null;
+// 隐藏右侧预测台后, 雷达占满整屏; 状态存 localStorage, 刷新页面后保持
+function applyMainCol(hidden) {
+  document.querySelector('.layout').classList.toggle('hideMain', hidden);
+  $('wlToggleMain').textContent = hidden ? '显示预测台' : '隐藏预测台';
+}
+function toggleMainCol() {
+  const hidden = !document.querySelector('.layout').classList.contains('hideMain');
+  applyMainCol(hidden);
+  try { localStorage.setItem('wlHideMain', hidden ? '1' : '0'); } catch (_) {}
+}
+try { applyMainCol(localStorage.getItem('wlHideMain') === '1'); } catch (_) {}
+let _wlTimer = null, _wlBusy = false;
 async function refreshWatchlist() {
+  if (_wlBusy) return;   // 3秒轮询下, 上一次未返回就跳过, 避免请求堆积
+  _wlBusy = true;
   try {
-    const d = await apiJson('/api/watchlist', 45000, false);
+    const d = await apiJson('/api/watchlist', _wlLastData ? 8000 : 45000, false);
     $('wlStatus').textContent = `更新于 ${d.time}`;
     _wlLastData = d;
     $('wlRisk').innerHTML = wlRiskBox(d);
@@ -1722,16 +1825,16 @@ async function refreshWatchlist() {
     notifyAlerts(d);
     $('wlStrong').innerHTML = wlStrongBox(d);
     $('wlSectors').innerHTML = wlSectorsBox(d);
-    $('wlListHead').textContent = `全部 ${d.total_n} 只 · 按评分降序`;
-    $('wlList').innerHTML = d.items.map(wlRow).join('');
+    $('wlListHead').textContent = `全部 ${d.total_n} 只 · 按评分降序 · 价格/走势每3秒刷新, 资金流每30秒更新`;
+    $('wlList').innerHTML = WL_HDR + d.items.map(wlRow).join('');
   } catch (e) {
     $('wlStatus').textContent = `刷新失败: ${e.message}`;
-  }
+  } finally { _wlBusy = false; }
 }
 function wlStart() {
   refreshWatchlist();
   if (_wlTimer) clearInterval(_wlTimer);
-  _wlTimer = setInterval(refreshWatchlist, 30000);
+  _wlTimer = setInterval(refreshWatchlist, 3000);
 }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { if (_wlTimer) clearInterval(_wlTimer); }
