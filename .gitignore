@@ -11,3 +11,4 @@ webapp.stderr.log
 webapp.current.stdout.log
 webapp.current.stderr.log
 webapp.pid
+/tmp
