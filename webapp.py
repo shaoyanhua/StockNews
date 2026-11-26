@@ -2039,4 +2039,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     print(f"涨跌预测台已启动: http://127.0.0.1:{PORT} (PID {os.getpid()})", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    try:
+        ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    except KeyboardInterrupt:
+        print("\n涨跌预测台已停止", flush=True)
